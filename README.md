@@ -14,11 +14,11 @@ src/
   v0/          - simple process injection
   v1/          - refinement
   v2/          - native APC syscall injection
-  xor/         - XOR encoding & obfuscation example
+  xor/         - XOR encoding & obfuscation 
 
 additions/
-  commands.txt     - one-liners & workshop commands
-  filebloat.ps1    - file bloating script in PowerShell
+  commands.txt     - relevant commands
+  filebloat.ps1    - file bloating PowerShell script
   resources.txt    - additional resources
 ```
 
