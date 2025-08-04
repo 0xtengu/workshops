@@ -85,7 +85,7 @@ elseif ($Mode -eq 'v3') {
         } catch {}
     }
 
-    if ($files.Count -eq 0) { throw "No suitable filenames found for v3." }
+    if ($files.Count -eq 0) { throw "No suitable filenames found for v3" }
 
     $list = $files | Get-Random -Count ([Math]::Min($LineCount, $files.Count)) | Sort-Object
     "const char* bloatData[] = {" | Set-Content $Path
