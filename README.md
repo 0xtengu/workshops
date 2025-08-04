@@ -3,10 +3,7 @@ Building Your First Windows Malware Loader
 
 > OVERVIEW
 
-Learn the basics of building a Windows loader, with a focus on process injection.
-
-From memory allocation to remote process injection, this is an intro to maldev,  
-built to get you started and self-sufficient.
+Learn the basics of building a Windows Malware loader, focusing on process injection.
 
 
 > DIRECTORY STRUCTURE
@@ -44,4 +41,3 @@ That said, this is for educational and research purposes only.
 
 Use responsibly.  
 Author takes no liability for misuse, damage, or unintended consequences.
-You break it, you buy it.
