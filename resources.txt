@@ -1,6 +1,9 @@
 ==============================
 Additional Resources
 ==============================
+--- Windows Internals ---
+Windows Internals, Part 1 7e
+	https://empyreal96.github.io/nt-info-depot/Windows-Internals-PDFs/Windows%20System%20Internals%207e%20Part%201.pdf
 
 --- WinAPI Lookup ---
 Google Dork:
@@ -37,9 +40,13 @@ Corey Overstreet - That Shouldn't Have Worked: Payload Development 101
 	https://www.youtube.com/watch?v=qpGMVuQ5yO8
 
 --- Misc. ---
+64-bit Reverse Shell in Assembly
+	https://github.com/V-i-x-x/Assembly-Shellcode64
 SANS: Hunt for Evil
 	https://www.sans.org/posters/hunt-evil
 VX-Underground	
 	https://vx-underground.org/
-64-bit Reverse Shell in Assembly
-	https://github.com/V-i-x-x/Assembly-Shellcode64
+tmp.0ut
+	https://tmpout.sh/
+Phrack
+	https://phrack.org/
