@@ -4,7 +4,6 @@
 
 > ### OVERVIEW  
 > Learn the basics of building a Windows loader, focusing on process injection.  
-> From memory allocation to remote process injection—this intro to malware dev will get you writing, breaking, and building on your own.
 
 ---
 
