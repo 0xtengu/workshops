@@ -11,26 +11,26 @@ unsigned char shellcode[] = {
 
 int main(void)
 {
-    // STEP 1: open the target process
+    // STEP 1: Open the target process
     HANDLE hProcess = NULL;
     // hProcess = OpenProcess();
 
-    // STEP 2: allocate memory in the target process
+    // STEP 2: Allocate memory in the remote process
     PVOID remoteAddr = NULL;
     // remoteAddr = VirtualAllocEx();
 
-    // STEP 3: write the shellcode
+    // STEP 3: Write the shellcode
     // WriteProcessMemory();
 
-    // STEP 4: change memory protection to executable (optional)
+    // STEP 4: Change memory protection to executable
     DWORD oldProtect;
     // VirtualProtectEx();
 
-    // STEP 5: create a remote thread to execute the shellcode
+    // STEP 5: Create a remote thread to execute the shellcode
     HANDLE hThread = NULL;
     // hThread = CreateRemoteThread();
 
-    // STEP 6: cleanup
+    // STEP 6: Cleanup
     // CloseHandle(hThread); 
     // CloseHandle(hProcess);
 
