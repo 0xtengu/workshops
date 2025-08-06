@@ -1,15 +1,13 @@
 # Building Your First Windows Malware Loader
 
 ---
-
 > ### OVERVIEW
 > Red Team Village workshop at DEF CON 33.
 > 
 > Learn the basics of building a Windows malware loader, focusing on process injection.  
 
 ---
-
-> ### DIRECTORY STRUCTURE  
+> ### DIRECTORY STRUCTURE 
 ```
 src/
   memory/      - memory allocation example
@@ -37,7 +35,7 @@ additions/
 > - [System Informer](https://github.com/winsiderss/systeminformer)
 
 ---
-
+> [!IMPORTANT]
 > ### LEGAL DISCLAIMER  
 > This project is licensed under the [MIT License](./LICENSE).  
 > You’re free to use, modify, and distribute this code as you like.  
