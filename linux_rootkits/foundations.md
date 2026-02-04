@@ -1,3 +1,5 @@
+```txt
+
  _     _                    ____             _   _    _ _ 
 | |   (_)_ __  _   ___  __ |  _ \ ___   ___ | |_| | _(_) |_ ___ 
 | |   | | '_ \| | | \ \/ / | |_) / _ \ / _ \| __| |/ / | __/ __|
@@ -397,7 +399,7 @@ If you get "Required key not available" when loading modules:
     Either disable Secure Boot in BIOS or sign your modules (have fun :D)
     For workshop purposes, disabling is easier
 
-WORKSHOP DIRECTORY STRUCTURE:
+EXAMPLE WORKSHOP DIRECTORY STRUCTURE:
 
 Create organized workspace:
 
@@ -587,7 +589,7 @@ Every LKM requires exactly these components and nothing more:
 Without any of these components, the module will fail to compile or load.
 This is the bare minimum to have a functional LKM.
 
-```C
+
 ----[ minimal.c ]---
 #include <linux/init.h>
 #include <linux/module.h>
@@ -608,7 +610,7 @@ static void __exit minimal_exit(void)
 
 module_init(minimal_init);
 module_exit(minimal_exit);
-```
+
 -------------------
 
 Compile and test:
@@ -671,7 +673,7 @@ modules without recompiling. Here's how they work:
 This is how rootkits can be configured without recompiling, making them more
 flexible and reusable across different targets.
 
-```C
+
 ----[ sysinfo_params.c ]---
 #include <linux/init.h>
 #include <linux/module.h>
@@ -682,7 +684,7 @@ flexible and reusable across different targets.
 #include <linux/mm.h>
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Workshop Attendee");
+MODULE_AUTHOR("0xtengu");
 MODULE_DESCRIPTION("System info with configurable parameters");
 MODULE_VERSION("1.0");
 
@@ -816,7 +818,7 @@ static void __exit sysinfo_exit(void)
 
 module_init(sysinfo_init);
 module_exit(sysinfo_exit);
-```
+
 -------------------
 
 Build and test with different parameter combinations:
@@ -904,7 +906,7 @@ This is how many kernel modules communicate with userspace tools, and how
 rootkits can be controlled without loading new modules.
 
 ----[ proc_interface.c ]---
-```C
+
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -1057,7 +1059,7 @@ static void __exit proc_interface_exit(void)
 
 module_init(proc_interface_init);
 module_exit(proc_interface_exit);
-```
+
 -------------------
 
 Build and test:
@@ -1215,3 +1217,6 @@ calls and modify kernel behavior in userland and kernel space.
 # Notes for edit
     Compiler for kernel objects from C code
     printk's required?
+
+
+```
