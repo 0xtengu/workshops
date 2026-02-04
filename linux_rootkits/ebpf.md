@@ -1,3 +1,5 @@
+```txt
+
       ____  ____  _____
   ___| __ )|  _ \|  ___|
  / _ \  _ \| |_) | |_ 
@@ -453,3 +455,6 @@ The last .md awaits: persistence strategies.
                     EVASION
 
 .EOF
+
+
+```
