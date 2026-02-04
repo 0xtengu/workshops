@@ -1,3 +1,5 @@
+```txt
+
  _   _ ____  _____ ____  _        _    _   _ ____ 
 | | | / ___|| ____|  _ \| |      / \  | \ | |  _ \ 
 | | | \___ \|  _| | |_) | |     / _ \ |  \| | | | |
@@ -603,7 +605,8 @@ int main()
     
     return 0;
 }
--------------------
+
+----[ injector.c ]---
 
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -1102,7 +1105,7 @@ We patch a target function by:
 NOTE: In this example we assume the binary's path contains 'target' so we can 
 easily find its mapping line (in production would have to automate discovery).
 
-----[ target.c ]---
+----[ target_2.c ]---
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <unistd.h>
@@ -1249,10 +1252,7 @@ int main(void)
     return 0;
 }
 
-
--------------------
-
-----[ injector.c ]---
+----[ injector_2.c ]---
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -1696,14 +1696,14 @@ Build and run:
 
 ----[ terminal ]---
 # Compile
-gcc -o target target.c -no-pie -fno-pic -fcf-protection=none -static
-gcc -o injector injector.c
+gcc -o target_2 target_2.c -no-pie -fno-pic -fcf-protection=none -static
+gcc -o injector_2 injector_2.c
 
 # Terminal 1: Run target
-./target
+./target_2
 
 # Terminal 2: Inject
-./injector <PID> <ADDR>
+./injector_2 <PID> <ADDR>
 
 # Terminal 3: When target waits for input, press Enter
 # Then immediately connect:
@@ -1791,3 +1791,5 @@ syscalls directly at the kernel level using Ftrace, Kprobes, and eBPF.
                    HOOKING
 
 .EOF
+
+```
