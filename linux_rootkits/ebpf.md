@@ -16,32 +16,63 @@
 In Part I, III, and IV, we built Loadable Kernel Modules (LKMs).
 -   We compiled a .ko file.
 -   We used insmod to load it.
--   We were running in Ring 0...
+-   We were effectively patching the kernel at runtime.
 
-eBPF IS DIFFERENT. https://docs.ebpf.io/ [ RTFM ]
+If LKMs are Kernel Plugins, then eBPF is Kernel Scripting.
 
-eBPF programs are NOT Kernel Modules. They are not .ko files.
-They are bytecode programs that run inside a Virtual Machine in the kernel.
+eBPF (Extended Berkeley Packet Filter) allows us to 
+run sandboxed programs inside the kernel without changing 
+kernel source code or loading a risky module.
 
-Because they are not modules, insmod cannot load them.
-So we have to write our own Loader to inject them.
-But an eBPF rootkit sees the truth. If a system admin has a cron job running in 
-the background, we see it. If an attacker tries to run a hidden script, we see it.
-If EDR does ANYTHING, we see it. 
+**THINK OF IT LIKE A WEB BROWSER ON WINDOWS:**
+* The Kernel is Firefox.
+* An LKM is a compiled .DLL plugin. (Powerful, but if it breaks, Firefox crashes).
+* eBPF is JavaScript. (It runs on events like "On Click", it is safe, and 
+    if it errors, the browser catches it).
 
-It's hard to hide from the Kernel man.
 
-ADVANTAGES OF eBPF:
-    1.  Stealth: eBPF programs do NOT show up in lsmod.
-    2.  Safety: The Verifier help you not crash the kernel.
-    3.  Persistence: You can pin them to the filesystem; 
-        abandon your loader.
+----[ Why use it? ]----------------------------------------------------
+
+It was originally designed for network packet filtering (tcpdump), but it evolved.
+
+Linux uses eBPF for:
+1.  Observability (Tools like checking which process is using the hard drive).
+2.  Networking (Routing packets faster than the standard stack).
+3.  Security (Blocking syscalls in containers).
+
+Because it is built-in to modern kernels, we can use it to Live off the Land.
+We don't need to install eBPF; we just need to use it.
+
+----[ The "Virtual Machine" Confusion ]---------------------------------------
+
+You may hear some say e"BPF runs in a Virtual Machine." 
+They do NOT mean VMWare or VirtualBox. 
+It's **Process Virtual Machine** (kinda like the Java JVM).
+
+1.  NO Hardware Virtualization (VT-x/AMD-v) is needed.
+2.  It works on bare metal and inside VMs. (Raspberry Pis too!)
+
+THE FLOW:
+1.  [Compiling] Write C code and compile it to eBPF Bytecode.
+2.  [Loading]   Use a userspace tool (Loader) to send bytecode to the Kernel.
+3.  [Verifier]  The Kernel checks the code: "Does this loop forever? Does it access invalid memory?"
+4.  [JIT]       If it passes, the Just-In-Time compiler turns Bytecode into Native Assembly.
+5.  [Execution] The CPU runs it at native speed when the event happens.
+
+----[ Why We Will Use It ]---------------------------------------------------
+
+1.  eBPF maps and programs do not show up in `lsmod`.
+2.  The Verifier prevents us from crashing the kernel (mostly).
+3.  The code can be loaded, run once to steal a key, and 
+    unloaded in milliseconds.
+4.  We can hook Syscalls, Network Packets, and Userland 
+    Functions from one place.
 
 ----[ The Architecture: Visual Flow ]-----------------------------------------
 
 Comparison of how our rootkits get into the kernel:
 
-        TRADITIONAL LKM                      MODERN eBPF ROOTKIT
+        TRADITIONAL LKM                        eBPF ROOTKIT
       (Ftrace / Kprobes)                    (XDP / Tracepoints)
       ------------------                    -------------------
 
@@ -62,7 +93,11 @@ Comparison of how our rootkits get into the kernel:
     +------------------+                          | Runs Safely   |
                                                   +---------------+
 
-----[ Development Environment ]-----------------------------------------------
+  _____ _   ___     _____ ____   ___  _   _ __  __ _____ _   _ _____ 
+ | ____| \ | \ \   / /_ _|  _ \ / _ \| \ | |  \/  | ____| \ | |_   _|
+ |  _| |  \| |\ \ / / | || |_) | | | |  \| | |\/| |  _| |  \| | | | 
+ | |___| |\  | \ V /  | ||  _ <| |_| | |\  | |  | | |___| |\  | | | 
+ |_____|_| \_|  \_/  |___|_| \_\\___/|_| \_|_|  |_|_____|_| \_| |_| 
 
 We need Clang (to compile bytecode) and libbpf (to handle the injection).
 
@@ -406,11 +441,50 @@ clean:
 
     Terminal 2 gets PWNED World
 
+**Where is the eBPF payload now?**
+
+    It's floating somewhere in Kernel RAM.
+
+    Once loaded, the eBPF bytecode is 
+    JIT-compiled into native Assembly. 
+    It sits in Non-Paged Kernel Memory.
+
+# PERSISTENCE TRICK
+
+To keep the payload alive without keeping a loader process 
+running, we "pin" it to the filesystem. This creates a reference
+count so the kernel doesn't delete it.
+
+The location: /sys/fs/bpf/
+
+If you check that directory, you might see a file (e.g., /sys/fs/bpf/my_rootkit).
+
+    This is not the executable file.
+
+    It is a "handle" (reference) that keeps the RAM allocated.
+
+----[ How to find it ]----
+
+# List all loaded eBPF programs
+sudo bpftool prog show
+
+# List all loaded eBPF maps (where data is stored)
+sudo bpftool map show
+
+34: kprobe  name my_hook  tag a1b2c3d4  gpl
+    loaded_at 2023-10-27T...  uid 0
+    xlated 88B  jited 64B  memlock 4096B
+
+ID (34): The unique ID of the program.
+Type (kprobe): How it is attached.
+Name (my_hook): The function name 
+        (OpSec Note: Don't name your function rootkit_hook!)
+
   ____  _   _ __  __ __  __    _    ____  __   __
  / ___|| | | |  \/  |  \/  |  / \  |  _ \ \ \ / /
  \___ \| | | | |\/| | |\/| | / _ \ | |_) | \ V / 
-  ___) | |_| | |  | | |  | |/ ___ \|  _ <   | |  
- |____/ \___/|_|  |_|_|  |_/_/   \_\_| \_\  |_|  
+  ___) | |_| | |  | | |  | |/ ___ \|  _ <   | |
+ |____/ \___/|_|  |_|_|  |_/_/   \_\_| \_\  |_|
 
 
 ----[ Summary: eBPF Capabilities ]--------------------------------------------
@@ -425,7 +499,7 @@ WHAT YOU LEARNED:
 
 TECHNIQUE COMPARISON:
 
-Legacy Rootkits (LKM):
+LKM rootkits:
 
     [+] Full unrestricted memory access.
     [-] Higher risk of kernel panic (BSOD).
@@ -455,6 +529,5 @@ The last .md awaits: persistence strategies.
                     EVASION
 
 .EOF
-
 
 ```
