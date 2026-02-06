@@ -23,10 +23,6 @@ Ftrace is the Linux kernel's built-in tracing infrastructure. While it was
 designed for debugging (tracing function calls, latency, and performance), 
 we rootkit authors abuse it to hook kernel functions dynamically.
 
-In the previous module, we hijacked the PLT/GOT or used LD_PRELOAD.
-Those techniques are limited to specific processes.
-Here, in Ring 0, we change the rules.
-
 WHY FTRACE REPLACED SYSCALL TABLE HOOKING:
     
     1. OLD WAY (Syscall Table): 
@@ -152,7 +148,11 @@ hook time.
     BOOT TIME:  call __fentry__  -->  NOP NOP NOP (No Operation)
     HOOK TIME:  NOP NOP NOP      -->  call ftrace_thunk (Our Rootkit)
 
-----[ Development Environment ]-----------------------------------------------
+  _____ _   ___     _____ ____   ___  _   _ __  __ _____ _   _ _____ 
+ | ____| \ | \ \   / /_ _|  _ \ / _ \| \ | |  \/  | ____| \ | |_   _|
+ |  _| |  \| |\ \ / / | || |_) | | | |  \| | |\/| |  _| |  \| | | | 
+ | |___| |\  | \ V /  | ||  _ <| |_| | |\  | |  | | |___| |\  | | | 
+ |_____|_| \_|  \_/  |___|_| \_\\___/|_| \_|_|  |_|_____|_| \_| |_| 
 
 Unlike userland, you need kernel headers to build modules.
 
@@ -407,9 +407,42 @@ LOGIC:
       Prepare Root Credentials
       Commit Credentials to Task
 
+----[ Note: Recursion & Stability ]---------------------------------------
+
+Writing kernel code is dangerous. A mistake doesn't segfault the app; it 
+panics the OS.
+
+1. SLEEPING IN ATOMIC CONTEXT (The #1 Crash Cause)
+   Ftrace hooks execute in an "Atomic" or "Interrupt" context. 
+   You CANNOT call functions that might sleep (wait) for I/O or memory.
+   
+   - BAD:  kmalloc(..., GFP_KERNEL), prepare_creds()
+   - GOOD: kmalloc(..., GFP_ATOMIC), schedule_work()
+
+   If you need to do heavy lifting (like changing credentials), use a 
+   Workqueue to offload the task to a process context.
+
+2. RECURSION
+   If you hook `printk` and then call `printk` inside your hook, the kernel 
+   enters an infinite loop and crashes.
+   
+   Defense:
+   - Check `within_module(parent_ip, THIS_MODULE)` in the trampoline.
+   - Use `ftrace_function_recursion` checks.
+
+3. INDIRECT BRANCH TRACKING (IBT)
+   On Intel Tiger Lake (11th Gen) and newer, the CPU enforces "Control-Flow 
+   Integrity." Jumping to a function that doesn't start with `ENDBR64` triggers 
+   a fault.
+   
+   Standard ftrace is usually safe, but manual trampoline manipulation can 
+   trigger this. Our `ftrace_helper.h` manually toggles IBT off during hook 
+   installation to ensure compatibility with modern kernels (5.8+).
+
+
 Create `hook_kill.c`:
 
-#include <linux/cred.h>
+v#include <linux/cred.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -672,40 +705,6 @@ module_exit(rootkit_exit);
 7.  ss -ant | grep 8081
 
 
-
-----[ Note: Recursion & Stability ]---------------------------------------
-
-Writing kernel code is dangerous. A mistake doesn't segfault the app; it 
-panics the OS.
-
-1. SLEEPING IN ATOMIC CONTEXT (The #1 Crash Cause)
-   Ftrace hooks execute in an "Atomic" or "Interrupt" context. 
-   You CANNOT call functions that might sleep (wait) for I/O or memory.
-   
-   - BAD:  kmalloc(..., GFP_KERNEL), prepare_creds()
-   - GOOD: kmalloc(..., GFP_ATOMIC), schedule_work()
-
-   If you need to do heavy lifting (like changing credentials), use a 
-   Workqueue to offload the task to a process context.
-
-2. RECURSION
-   If you hook `printk` and then call `printk` inside your hook, the kernel 
-   enters an infinite loop and crashes.
-   
-   Defense:
-   - Check `within_module(parent_ip, THIS_MODULE)` in the trampoline.
-   - Use `ftrace_function_recursion` checks.
-
-3. INDIRECT BRANCH TRACKING (IBT)
-   On Intel Tiger Lake (11th Gen) and newer, the CPU enforces "Control-Flow 
-   Integrity." Jumping to a function that doesn't start with `ENDBR64` triggers 
-   a fault.
-   
-   Standard ftrace is usually safe, but manual trampoline manipulation can 
-   trigger this. Our `ftrace_helper.h` manually toggles IBT off during hook 
-   installation to ensure compatibility with modern kernels (5.8+).
-
-
 ----[ Detection & Persistence ]-----------------------------------------------
 
 Once your rootkit is loaded, it is vulnerable to detection.
@@ -736,9 +735,6 @@ Once your rootkit is loaded, it is vulnerable to detection.
    Defense: You would need to hook `sys_read` or the specific file operations
    for the tracefs filesystem to hide these entries.
 
-   Defense: You would need to hook `sys_read` or the specific file operations
-   for the tracefs filesystem to hide these entries.
-
 3. TAINTED KERNEL
    Loading an unsigned module sets the "Taint" flag.
    
@@ -761,8 +757,8 @@ $ cat /proc/sys/kernel/tainted
   ____  _   _ __  __ __  __    _    ____  __   __
  / ___|| | | |  \/  |  \/  |  / \  |  _ \ \ \ / /
  \___ \| | | | |\/| | |\/| | / _ \ | |_) | \ V / 
-  ___) | |_| | |  | | |  | |/ ___ \|  _ <   | |  
- |____/ \___/|_|  |_|_|  |_/_/   \_\_| \_\  |_|  
+  ___) | |_| | |  | | |  | |/ ___ \|  _ <   | | 
+ |____/ \___/|_|  |_|_|  |_/_/   \_\_| \_\  |_| 
 
 
 ----[ Summary: Ftrace Techniques ]--------------------------------------------
@@ -770,32 +766,17 @@ $ cat /proc/sys/kernel/tainted
 WHAT YOU LEARNED:
 
     Ftrace Hooking        - Intercepting function calls via tracing API
-    Kernel Modules (LKM)  - Loading code into Ring 0
     Runtime Patching      - How the kernel modifies assembly dynamically
     Kallsyms Lookup       - Bypassing unexported symbol restrictions
     IBT Bypassing         - Handling Indirect Branch Tracking hardware
 
-KEY CONCEPTS:
-
-    Moving from Userland (Ring 3) back to Kernel (Ring 0)
-    The difference between syscall table hacking and Ftrace
-    Why we need helper libraries for modern kernels (5.7+)
-    Recursion dangers in kernel mode
-
-TECHNIQUE COMPARISON:
-
-    Syscall Table Hijacking (Old School):
-        + Conceptually simple (just an array of pointers)
-        - Table is Read-Only (CR0 register manipulation needed)
-        - Race conditions are common
-        - Highly unstable on modern kernels
-        
     Ftrace Hooking (Modern):
         + Uses legitimate kernel API
         + Race-free and SMP safe
         + Can hook almost any kernel function, not just syscalls
         + Works with KASLR enabled
         - Leaves visible traces in debugfs
+        - Requires extra cleanup
         - Requires specialized setup for IBT (Intel CET)
 
 DETECTION METHODS:
@@ -817,13 +798,13 @@ DETECTION METHODS:
 YOU ARE NOW READY:
 
     [✓] Understand the Ftrace infrastructure
-    [✓] Can build and load Kernel Modules
+    [✓] Can build and load Kernel Modules in a rootkit context
     [✓] Know how to resolve unexported kernel symbols
     [✓] Can implement Privilege Escalation (Hooking sys_kill)
     [✓] Can implement Port Hiding (Hooking tcp4_seq_show)
 
 Next we move to KPROBES, which offers even higher granularity. While Ftrace 
-hooks the *entry* of a function, Kprobes can hook *any instruction* in memory.
+hooks the **entry** of a function, Kprobes can hook **any instruction** in memory.
 
             ▐             
             ▜▀ ▞▀▖▛▀▖▞▀▌▌ ▌
@@ -835,6 +816,5 @@ hooks the *entry* of a function, Kprobes can hook *any instruction* in memory.
                     KPROBES
 
 .EOF
-
 
 ```
