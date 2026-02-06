@@ -1,17 +1,16 @@
 ```txt
 
- _     _                    ____             _   _    _ _ 
-| |   (_)_ __  _   ___  __ |  _ \ ___   ___ | |_| | _(_) |_ ___ 
-| |   | | '_ \| | | \ \/ / | |_) / _ \ / _ \| __| |/ / | __/ __|
-| |___| | | | | |_| |>  <  |  _ < (_) | (_) | |_|   <| | |_\__ \
-|_____|_|_| |_|\__,_/_/\_\ |_| \_\___/ \___/ \__|_|\_\_|\__|___/
-                                                                  
-                                W O R K S H O P 
+  _____                    _       _   _ 
+ |  ___|__  _   _ _ __  __| | __ _| |_(_) ___  _ __  ___ 
+ | |_ / _ \| | | | '_ \/ _` |/ _` | __| |/ _ \| '_ \/ __| 
+ |  _| (_) | |_| | | | | (_| | (_| | |_| | (_) | | | \__ \
+ |_|  \___/ \__,_|_| |_|\__,_|\__,_|\__|_|\___/|_| |_|___/
 
 ================================================================================
                             PART I: FOUNDATIONS
 ================================================================================
 
+# ---[ We already have initial access 
 
 ----[ Introduction - Linux Rootkits Landscape ]------------------------------
 
@@ -20,22 +19,13 @@ A rootkit is malware whose main objective and purpose is to:
     Maintain persistence within a system
     Remain completely hidden from detection
     Hide processes, files, directories, and network connections
-    Avoid detection by security tools
-    Change the system's default behavior
-
-This makes detection complex, and mitigation even more challenging, since 
-one of the primary objectives of a rootkit is to remain hidden.
-
-# We already have initial access
+        Change the system's default behavior
 
 In this workshop, we cover two major categories:
 
     USERLAND ROOTKITS - Operating in user space using techniques like LD_PRELOAD
 
-#### Mostly though
     KERNEL ROOTKITS - Operating in kernel space as Loadable Kernel Modules (LKMs)
-
-# WHY LKM's HERE - WE WILL COME BACK TO THIS TOO
     
 Why Attackers Choose Kernel Rootkits:
 
@@ -260,9 +250,7 @@ Disadvantages:
     Cannot hide from kernel-level inspection
     Ineffective against forensic tools
 
-# LINUX KERNEL MODULES (LKM)
-
-[ ! ]
+# LINUX KERNEL MODULES (LKM) = our main focus
 
 ----[ Anatomy of a Loadable Kernel Module ]-----------------------------------
 
@@ -285,7 +273,7 @@ Module Lifecycle:
     Module operates as part of the kernel
            |
            v
-    rmmod signals module to unload
+    rmmod signals module to unload (generally a manual action)
            |
            v
     module_exit() function is called automatically
@@ -318,14 +306,26 @@ Entry and Exit Points:
 
 Kernel Logging:
 
-    printk() is the kernel equivalent of printf()
+    printk() is the kernel equivalent of printf() 
     Writes to kernel ring buffer (read with dmesg) 
     Uses log levels: KERN_INFO, KERN_ERR, KERN_DEBUG, etc.
+
+    **printk is not required** = we avoid for offensive opsec, not demos
+
+    [ https://docs.kernel.org/core-api/printk-basics.html ]
+
 
 KERNEL BUILD SYSTEM:
 
 The kernel uses a build system (Kbuild) to ensure modules are compiled
 with the same flags, configuration, and ABI as the running kernel.
+
+Kbuild calls gcc (sometimes clang) with a massive list of specific flags.
+Flags are critical, they tell the compiler:
+
+    - Don't use standard libraries (no libc)
+    - Use the specific kernel memory model ( -mcmodel=kernel )
+    - Disable floating-point math (kernel doesn't do floats)
 
 Key Requirements:
 
@@ -344,9 +344,9 @@ Why This Matters:
 
  _____ _   ___     _____ ____   ___  _   _ __  __ _____ _   _ _____ 
 | ____| \ | \ \   / /_ _|  _ \ / _ \| \ | |  \/  | ____| \ | |_   _|
-|  _| |  \| |\ \ / / | || |_) | | | |  \| | |\/| |  _| |  \| | | |  
-| |___| |\  | \ V /  | ||  _ <| |_| | |\  | |  | | |___| |\  | | |  
-|_____|_| \_|  \_/  |___|_| \_\\___/|_| \_|_|  |_|_____|_| \_| |_|  
+|  _| |  \| |\ \ / / | || |_) | | | |  \| | |\/| |  _| |  \| | | | 
+| |___| |\  | \ V /  | ||  _ <| |_| | |\  | |  | | |___| |\  | | | 
+|_____|_| \_|  \_/  |___|_| \_\\___/|_| \_|_|  |_|_____|_| \_| |_| 
 
 
 ----[ Development Environment Setup ]-----------------------------------------
@@ -404,7 +404,7 @@ EXAMPLE WORKSHOP DIRECTORY STRUCTURE:
 Create organized workspace:
 
 ----[ terminal ]---
-mkdir -p ~/rootkit_workshop/{userland,ftrace,kprobes,ebpf,helpers}
+mkdir -p ~/rootkit_workshop/{foundations,kuserland,ftrace,kprobes,ebpf,persistence}
 cd ~/rootkit_workshop
 tree
 -------------------
@@ -412,6 +412,7 @@ tree
 This gives you:
 
     rootkit_workshop/
+    ├── foundations/
     ├── userland/
     ├── ftrace/
     ├── kprobes/
@@ -448,7 +449,7 @@ Build Metadata:
                     SOURCE CODE
                         |
                         v
-                [Compilation Phase]
+                [Compilation Magic]
                         |
                         v
                     module.o
@@ -488,9 +489,7 @@ COMPILATION METHODS:
 
 # Method 1: Direct command [ single line ]
 
-----[ terminal ]---
-make -C /lib/modules/$(uname -r)/build M=$(pwd) modules
--------------------
+make -C /lib/modules/$(uname -r)/build M=$(pwd) obj-m={rootkit_name.o} modules
 
 # If you want to be fancy with your pinky up
 # Method 2: Build script (reusable, accepts module name) 
@@ -589,6 +588,7 @@ Every LKM requires exactly these components and nothing more:
 Without any of these components, the module will fail to compile or load.
 This is the bare minimum to have a functional LKM.
 
+**printk is not required**
 
 ----[ minimal.c ]---
 #include <linux/init.h>
@@ -617,21 +617,47 @@ Compile and test:
 
 ----[ terminal ]---
 # Build
-make -C /lib/modules/$(uname -r)/build M=$(pwd) modules
+make -C /lib/modules/$(uname -r)/build M=$(pwd) obj-m=minimal.o modules
 
-# Load
+**want to see the flags?**
+make V=1 -C /lib/modules/$(uname -r)/build M=$(pwd) obj-m={rootkit_name.o} modules
+
+    Examples:
+
+    -nostdinc = Do NOT look in /usr/include
+
+    -D__KERNEL__ = Define the macro __KERNEL__
+        many header files are shared between userland and kernel,
+        this flag tells the code, "we are compiling the OS core,
+        not an app." 
+
+    -mcmodel=kernel = Memory Code Model = Kernel
+        Userland programs live at low memory addresses (e.g., 0x00400000). 
+        The Kernel lives in the stratosphere of memory (negative offset, e.g., 0xffffffff...). 
+        This tells GCC to generate pointers that work in that high address space.
+
+    --mno-sse -mno-mmx -mno-sse2 -mno-3dnow = Disable Floating Point Units
+        The kernel does not save/restore floating-point registers during context 
+        switches (for speed). If you try to do float x = 1.5;, these flags ensure 
+        the compiler yells at you or generates safe integer math instead.
+
+    -pg = Profiling Generate
+        Inserts a tiny hook called 'mcount' at the start of every single function
+        WE WILL TALK ABOUT THIS IN FTRACE!!!
+
+# 2. Load
 sudo insmod minimal.ko
 
-# Verify
+# 3. Verify
 lsmod | grep minimal
 
-# Check logs
+# 4. Check logs
 sudo dmesg | tail -2
 
-# Unload
+# 5. Unload
 sudo rmmod minimal
 
-# Clean
+# 6. Clean 
 make -C /lib/modules/$(uname -r)/build M=$(pwd) clean
 -------------------
 
@@ -855,6 +881,7 @@ echo 1 > /sys/module/sysinfo_params/parameters/verbose
 
 # Unload
 sudo rmmod sysinfo_params
+
 -------------------
 
 Expected output with all parameters enabled:
@@ -1057,8 +1084,8 @@ static void __exit proc_interface_exit(void)
     printk(KERN_INFO "[proc_interface] Module unloaded\n");
 }
 
-module_init(proc_interface_init);
-module_exit(proc_interface_exit);
+module_init(proc_interface_init); # once loaded with insmod, everything above happens
+module_exit(proc_interface_exit); # only called with rmmod
 
 -------------------
 
@@ -1161,8 +1188,8 @@ This technique is commonly used by rootkits to:
  ____  _   _ __  __ __  __    _    ______   __
 / ___|| | | |  \/  |  \/  |  / \  |  _ \ \ / /
 \___ \| | | | |\/| | |\/| | / _ \ | |_) \ V / 
- ___) | |_| | |  | | |  | |/ ___ \|  _ < | |  
-|____/ \___/|_|  |_|_|  |_/_/   \_\_| \_\|_|  
+ ___) | |_| | |  | | |  | |/ ___ \|  _ < | | 
+|____/ \___/|_|  |_|_|  |_/_/   \_\_| \_\|_| 
 
 
 ----[ Foundations Summary ]----------------------------------------------------
@@ -1174,22 +1201,7 @@ CONCEPTS COVERED:
     System calls as the interface between worlds 
     Types of rootkits and their tradeoffs
     Structure and lifecycle of Loadable Kernel Modules
-    The kernel build system and why it's complex
-
-PRACTICAL SKILLS:
-
-    Setting up a kernel development environment
-    Compiling kernel modules with the build system
-    Loading and unloading modules with insmod/rmmod
-    Viewing kernel logs with dmesg
-    Understanding build artifacts and cleanup
-    Using scripts to streamline the workflow
-
-BUILD ARTIFACTS RECAP:
-
-After compilation you'll have many files, but only .ko is needed to load.
-The others are build metadata that ensure kernel compatibility. Clean them
-up with a cleanup script or the kernel's clean target.
+    The kernel build system
 
 YOU ARE NOW READY:
 
@@ -1199,7 +1211,7 @@ YOU ARE NOW READY:
     [✓] You know how to debug with printk and dmesg
 
 Next we'll explore how rootkits use these fundamentals to intercept system
-calls and modify kernel behavior in userland and kernel space.
+calls and modify kernel behavior in userland.
 
             ▐             
             ▜▀ ▞▀▖▛▀▖▞▀▌▌ ▌
@@ -1211,12 +1223,6 @@ calls and modify kernel behavior in userland and kernel space.
                     ROOTKITS
 
 .EOF
-
-
-
-# Notes for edit
-    Compiler for kernel objects from C code
-    printk's required?
 
 
 ```
