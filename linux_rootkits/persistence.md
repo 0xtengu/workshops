@@ -1,11 +1,11 @@
 ```txt
 
-  ____  _____ ____  ____ ___ ____ _____ _____ _   _  ____ _____ 
+   ____  _____ ____  ____ ___ ____ _____ _____ _   _  ____ _____ 
  |  _ \| ____|  _ \/ ___|_ _/ ___|_   _| ____| \ | |/ ___| ____|
  | |_) |  _| | |_) \___ \| |\___ \ | | |  _| |  \| | |   |  _| 
  |  __/| |___|  _ < ___) | | ___) || | | |___| |\  | |___| |___ 
  |_|   |_____|_| \_\____/___|____/ |_| |_____|_| \_|\____|_____|
-
+    
 ================================================================================
                        PART VI: PERSISTENCE & EVASION
 ================================================================================
@@ -13,8 +13,8 @@
 
 ----[ Introduction - The Immortal Rootkit ]-----------------------------------
 
-You have built Userland hooks, Ftrace interceptors, and Kprobes snipers. You 
-are essentially God on the system.
+You have built Userland hooks, Ftrace interceptors, and Kprobes snipers.
+We are the true admin on this thing.
 
 Until the administrator types: reboot
 
@@ -522,8 +522,8 @@ sudo rmmod vanish.ko...
   ____  _   _ __  __ __  __    _    ____  __   __
  / ___|| | | |  \/  |  \/  |  / \  |  _ \ \ \ / /
  \___ \| | | | |\/| | |\/| | / _ \ | |_) | \ V / 
-  ___) | |_| | |  | | |  | |/ ___ \|  _ <   | |  
- |____/ \___/|_|  |_|_|  |_/_/   \_\_| \_\  |_|  
+  ___) | |_| | |  | | |  | |/ ___ \|  _ <   | | 
+ |____/ \___/|_|  |_|_|  |_/_/   \_\_| \_\  |_| 
 
 
 ----[ Workshop Summary & Final Checklist ]------------------------------------
@@ -546,6 +546,5 @@ And remember, always RTFM.
 [!] System Halted
 
 .EOF
-
 
 ```
