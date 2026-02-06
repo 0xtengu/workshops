@@ -13,9 +13,9 @@
 
 ----[ Introduction - Userland Techniques ]------------------------------------
 
-Userland rootkits operate entirely in user space, making them simpler to develop
-but also easier to detect than kernel-level rootkits. We'll cover both classic
-and modern techniques for function interception at the userspace level.
+Userland rootkits operate entirely in user space, making them [ REDACTED ] to develop
+but also **generally** easier to detect than kernel-level rootkits. We'll cover both 
+classic and modern techniques.
 
 TECHNIQUES COVERED:
 
@@ -25,9 +25,7 @@ TECHNIQUES COVERED:
 
 WHY USERLAND:
 
-    No kernel headers required
-    Cannot crash the kernel
-    Generally easier to test
+    **WE DO NOT HAVE SUDO PRIVS**
 
 COMMON TARGETS:
 
@@ -86,29 +84,59 @@ When a program calls readdir():
     1. Dynamic linker checks LD_PRELOAD libraries first
     2. Finds our readdir() implementation
     3. Calls OUR function instead of libc
-    4. Our function can:
-        - Examine the arguments
-        - Decide to hide results
-        - Call the real readdir() using dlsym()
-        - Filter/modify the results
-        - Return to program
+    4. Our function can do what we want.
 
-OBTAINING ORIGINAL FUNCTION:
+----[ Obtaining the Original Function ]----
 
-#### Generally, we use dlsym() to get the real function pointer:
+dlsym (Dynamic Linker Symbol) is a function in the Linux userland API 
+(specifically libdl) that allows a program to look up the memory address of 
+a function or variable inside a shared library (.so file) while the program 
+is running.
 
-    dlsym(RTLD_NEXT, "readdir")
+In standard programming, the linker connects functions at compile time. In 
+Rootkit/Hooking development, we use dlsym to perform Runtime Resolution.
 
-RTLD_NEXT tells dlsym to find the NEXT occurrence of the function in the
-library search order (skipping our own implementation).
+**Why do we need it?**
+When we hook `readdir`, we interrupt the flow. We are now the "man in the 
+middle." To avoid crashing the system, we eventually need to ask the *real* 
+Operating System to actually read the directory for us. 
 
-ADVANTAGES:
+`dlsym` gives us the memory address of the real function 
+so we can call it.
 
-    Standard C programming
-    Low barrier to entry - but buggy hooks can crash processes
-    Portable - Works across kernel versions
+The Magic Flag: RTLD_NEXT
 
-LIMITATIONS:
+* Normal dlsym: Finds the FIRST occurrence of a function. 
+  (This would find our hook again -> Infinite Loop/Crash).
+
+* dlsym(RTLD_NEXT, ...): Tells the dynamic linker: "Find the occurrence of 
+  this function in the NEXT shared library in the loading order, strictly 
+  after the current one."
+
+IMPLEMENTATION:
+
+    #define _GNU_SOURCE // REQUIRED for RTLD_NEXT
+    #include <dlfcn.h>
+    #include <dirent.h> 
+
+    // Define a function pointer that matches the original signature
+    typedef struct dirent* (*orig_readdir_type)(DIR *dirp);
+
+    // Use dlsym to find the NEXT occurrence of the symbol
+    orig_readdir_type orig_readdir;
+    orig_readdir = (orig_readdir_type)dlsym(RTLD_NEXT, "readdir");
+
+
+
+[!] COMPILATION NOTE:
+You must link against the dynamic linking library when compiling:
+    gcc -shared -fPIC -ldl -o rootkit.so rootkit.c
+                       ^^^^
+
+
+
+
+----[ LD_PRELOAD LIMITATIONS ]----
 
     Easily Detected - Check /etc/ld.so.preload
     Easily Bypassed - Static binaries ignore LD_PRELOAD
@@ -180,37 +208,58 @@ jump instruction at its beginning. This is one of the most flexible userland
 techniques, as it can hook ANY function in ANY library or binary, without
 relying on dynamic linking tricks like LD_PRELOAD.
 
-TRAMPOLINE TECHNIQUE:
+THE PROBLEM:
+To insert our `JMP` instruction (5 bytes), we have to delete the first 5 bytes 
+of the original function. If we don't save them, the function breaks.
 
-    Original function:
-        [function prologue]
-        [function body]
-        [function epilogue]
-        
-    After hooking:
-        [JMP to our hook]  <-- We insert this at the start
-        [saved bytes]      <-- Original prologue saved elsewhere
-        [function body]
-        [function epilogue]
-        
-    Our hook:
-        [do malicious or monitoring stuff]
-        [execute saved bytes]
-        [JMP back to original+5]
+THE SOLUTION: THE TRAMPOLINE
+We copy those stolen bytes to a safe place (the Trampoline) before we overwrite 
+them. Our hook calls this trampoline to run the original instructions before 
+returning to the target.
 
-INLINE HOOK PROCESS:
+IMPLEMENTATION STEPS:
 
-    1. Find target function address
-    2. Disassemble and save the first 5+ bytes (whole instructions)
-    3. Calculate relative jump offset to our hook
-    4. Overwrite the function start with JMP (0xE9 + offset)
-    5. Flush/ensure instruction cache coherency if needed
-    
-    When function is called:
-        -> Execution hits our JMP
-        -> Jumps into our hook
-        -> Hook runs (optionally calling original via saved bytes)
-        -> Hook jumps back to original+stolen_len
+1.  Locate the Target: Find the memory address of the function you want to hook.
+2.  Unprotect Memory: Memory pages containing code are usually Read-Only. 
+    You must use `mprotect()` to make the page Writeable (PROT_WRITE).
+3.  Build Trampoline: Copy the first N bytes (enough for the prologue) to a 
+    new buffer, followed by a JMP back to Target + N.
+4.  Overwrite: Write a JMP instruction (0xE9 ...) at the start of the Target 
+    pointing to your Hook function.
+5.  Reprotect: Restore original memory permissions to avoid suspicion.
+
+VISUALIZATION: THE EXECUTION FLOW
+
+    1. CALLER calls the Target Function...
+       |
+       v
+    [ TARGET FUNCTION (Modified) ]
+    |  JMP HOOK_FUNC      <-- We overwrote the start with this!
+    |  ... 
+    |  ...
+    +--|-----------------+
+       |
+       | (Jump to our code)
+       v
+    [ HOOK FUNCTION ]
+    |  1. Log the arguments (or change them)
+    |  2. Call TRAMPOLINE
+    +--|-----------------+
+       |
+       | (Call original logic)
+       v
+    [ TRAMPOLINE ]
+    |  1. Execute the 5 Stolen Bytes (Original Prologue)
+    |  2. JMP back to Target + 5
+    +--|-----------------+
+       |
+       | (Jump back to the middle of target)
+       v
+    [ TARGET FUNCTION ]
+    |  <Rest of the original function body...>
+    |  RET
+    +--------------------+
+
 
 ASSEMBLY DETAILS:
 
@@ -257,9 +306,9 @@ DISADVANTAGES:
 
   _____ _   ___     _____ ____   ___  _   _ __  __ _____ _   _ _____ 
  | ____| \ | \ \   / /_ _|  _ \ / _ \| \ | |  \/  | ____| \ | |_   _|
- |  _| |  \| |\ \ / / | || |_) | | | |  \| | |\/| |  _| |  \| | | |  
- | |___| |\  | \ V /  | ||  _ <| |_| | |\  | |  | | |___| |\  | | |  
- |_____|_| \_|  \_/  |___|_| \_\\___/|_| \_|_|  |_|_____|_| \_| |_|  
+ |  _| |  \| |\ \ / / | || |_) | | | |  \| | |\/| |  _| |  \| | | | 
+ | |___| |\  | \ V /  | ||  _ <| |_| | |\  | |  | | |___| |\  | | | 
+ |_____|_| \_|  \_/  |___|_| \_\\___/|_| \_|_|  |_|_____|_| \_| |_| 
 
 
 ----[ Development Environment ]-----------------------------------------------
@@ -304,7 +353,7 @@ Flags explained:
     -ldl            Link with libdl (for dlsym)
 
 
-  ____  ___  ____  _____   _______  __    _    __  __ ____  _     _____ ____  
+  ____  ___  ____  _____   _______  __    _    __  __ ____  _     _____ ____ 
  / ___|/ _ \|  _ \| ____| | ____\ \/ /   / \  |  \/  |  _ \| |   | ____/ ___| 
 | |   | | | | | | |  _|   |  _|  \  /   / _ \ | |\/| | |_) | |   |  _| \___ \ 
 | |___| |_| | |_| | |___  | |___ /  \  / ___ \| |  | |  __/| |___| |___ ___) |
@@ -471,13 +520,10 @@ When you run: LD_PRELOAD=./hide_files.so ls -la
 
 VERIFY FILES STILL EXIST:
 
-The files aren't actually deleted - they're just hidden from view:
+The files aren't actually deleted - they're just hidden from view
+when LD_PRELOAD is active:
 
 ----[ terminal ]---
-# Try to read a hidden file directly
-$ cat secret_malware.sh
-# This works! File still exists on disk
-
 # Use find (also affected by our hook)
 $ LD_PRELOAD=./hide_files.so find . -name "secret*"
 # No results - find uses readdir() so it's hooked too
@@ -512,7 +558,7 @@ $ LD_PRELOAD=./hide_files.so tree
 # All commands show the same filtered view
 -------------------
 
-INSTALL SYSTEM-WIDE:
+INSTALL SYSTEM-WIDE **REQUIRES SUDO**:
 
 To make the rootkit affect ALL programs automatically:
 
@@ -520,7 +566,7 @@ To make the rootkit affect ALL programs automatically:
 # Copy to system library directory
 sudo cp hide_files.so /usr/local/lib/
 
-# Configure system-wide preload
+# Configure system-wide preload 
 echo "/usr/local/lib/hide_files.so" | sudo tee /etc/ld.so.preload
 
 # Now ALL commands are affected (no LD_PRELOAD needed)
@@ -546,6 +592,7 @@ LIMITATIONS:
     Easy to detect by checking /etc/ld.so.preload
     Sophisticated programs can detect LD_PRELOAD in their environment
     Direct syscalls bypass libc entirely
+    **REQUIRES SUDO**
 -------------------
 
 ----[ Example 2: ptrace GOT/PLT Injection - Environment Spy ]----------------
@@ -1715,8 +1762,8 @@ nc 127.0.0.1 4444
  ____  _   _ __  __ __  __    _    ______   __
 / ___|| | | |  \/  |  \/  |  / \  |  _ \ \ / /
 \___ \| | | | |\/| | |\/| | / _ \ | |_) \ V / 
- ___) | |_| | |  | | |  | |/ ___ \|  _ < | |  
-|____/ \___/|_|  |_|_|  |_/_/   \_\_| \_\|_|  
+ ___) | |_| | |  | | |  | |/ ___ \|  _ < | | 
+|____/ \___/|_|  |_|_|  |_/_/   \_\_| \_\|_| 
 
 
 ----[ Summary: Userland Techniques ]------------------------------------------
