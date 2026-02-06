@@ -112,9 +112,11 @@ Big thanks to every author below for sharing their fantastic work.
     detect-lkm-rootkit-cheatsheet: https://github.com/MatheuZSecurity/detect-lkm-rootkit-cheatsheet
     nitara2: https://github.com/ksen-lin/nitara2
     ModTracer: https://github.com/MatheuZSecurity/ModTracer
-    Rootkit Examples (Educational)
+
+# Rootkit Examples
     MatheuZSecurity/Rootkit: https://github.com/MatheuZSecurity/Rootkit
     MatheuZSecurity/Imperius: https://github.com/MatheuZSecurity/Imperius
+    MatheuZSecurity/Singularity: https://github.com/MatheuZSecurity/Rootkit
     Diamorphine: https://github.com/m0nad/Diamorphine
     KoviD: https://github.com/carloslack/KoviD
     blackpill: https://github.com/DualHorizon/blackpill
